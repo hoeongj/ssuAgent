@@ -18,7 +18,7 @@ async def build_graph(
     """Build a ReAct agent graph.
 
     Args:
-        llm: Override LLM (used in tests). Defaults to Gemini Flash.
+        llm: Override LLM (used in tests). Defaults to the configured chat model.
         tools: Override tool list (used in tests). Defaults to ssuMCP public tools.
     """
     if tools is None:

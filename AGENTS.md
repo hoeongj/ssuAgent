@@ -1,13 +1,13 @@
-# AGENTS.md — ssuAgent
+# AGENTS.md - ssuAgent
 
 Python LangGraph campus assistant agent connecting to ssuMCP.
 
 ## Workflow
 
-- Claude = design/spec/review. Codex = ALL git & deploy execution. Claude does NOT commit.
-- Authorship: hoengj <seongjuice999@gmail.com>. NO AI attribution anywhere.
-  NO Co-Authored-By, NO "Claude"/"Codex"/"Gemini" in commits, PRs, code comments, docs.
-- Decisions: web search first → evaluate (portfolio value > trend fit > completion) → confirm with user.
+- Design/review and execution roles are coordinated by the mp root workflow.
+- Authorship: hoengj <seongjuice999@gmail.com>. No AI attribution anywhere.
+  No attribution trailers or assistant/vendor names in commits, PRs, code comments, docs.
+- Decisions: web search first, evaluate portfolio value > trend fit > completion, confirm with user.
 - Docs: Korean/English mix in README/docs. LLM-facing files (this file, prompts) = English only.
 
 ## Commands
@@ -15,7 +15,7 @@ Python LangGraph campus assistant agent connecting to ssuMCP.
 - Install: `uv sync --extra dev`
 - Test: `uv run pytest`
 - Lint: `uv run ruff check . && uv run ruff format --check .`
-- Run: `GOOGLE_API_KEY=<key> uv run python -c "import asyncio; from ssu_agent.graph import run_query; print(asyncio.run(run_query('오늘 학식 알려줘')))"`
+- Run: set `GOOGLE_API_KEY`, then call `ssu_agent.graph.run_query(...)` from Python.
 
 ## Phase Roadmap
 
