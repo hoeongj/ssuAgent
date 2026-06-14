@@ -133,7 +133,9 @@ def build_library_agent(
         if resume.get("approved") and confirm_tool is not None:
             mcp_session_id = state.get("mcp_session_id")
             action_id = resume.get("action_id", action["action_id"])
-            result = await confirm_tool.ainvoke({"mcp_session_id": mcp_session_id, "action_id": action_id})
+            result = await confirm_tool.ainvoke(
+                {"mcp_session_id": mcp_session_id, "action_id": action_id}
+            )
             msg = AIMessage(content=f"[도서관 에이전트] 예약 확정 완료: {result}")
         else:
             msg = AIMessage(content="[도서관 에이전트] 예약이 취소되었습니다.")
