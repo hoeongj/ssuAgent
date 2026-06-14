@@ -116,6 +116,11 @@ async def _stream_graph(input_data: dict | object, config: dict):
         if etype == "on_chat_model_stream":
             chunk = event["data"]["chunk"]
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
+            if isinstance(content, list):
+                content = "".join(
+                    item["text"] if isinstance(item, dict) and "text" in item else str(item)
+                    for item in content
+                )
             if content:
                 yield _sse({"type": "text", "content": content})
 
