@@ -3,6 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+    # Ignore Image Updater write-back commits (deploy/charts/*/values.yaml)
+    # to prevent infinite build loops: write-back → CI build → new image → write-back…
+    paths-ignore:
+      - 'deploy/**'
+      - 'docs/**'
+      - '**.md'
   pull_request:
     branches: [main]
 
