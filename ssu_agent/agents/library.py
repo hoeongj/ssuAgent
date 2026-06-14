@@ -47,7 +47,7 @@ from langgraph.types import interrupt
 from ssu_agent.llm_factory import create_llm
 from ssu_agent.supervisor.state import SsuAgentState
 
-_SYSTEM_PROMPT = """너는 숭실대학교 도서관 전담 AI야. 자기소개 없이 바로 답해.
+_SYSTEM_PROMPT = """당신은 숭실대학교 도서관 전문 AI 어시스턴트입니다.
 
 사용 가능한 도구:
 - 좌석 현황 조회, 좌석 추천, 도서 검색, 대출 현황

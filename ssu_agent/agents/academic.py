@@ -19,7 +19,7 @@ from langgraph.prebuilt import create_react_agent
 from ssu_agent.llm_factory import create_llm
 from ssu_agent.supervisor.state import SsuAgentState
 
-_SYSTEM_PROMPT = """너는 숭실대학교 학사 정보 전담 AI야. 자기소개 없이 바로 답해.
+_SYSTEM_PROMPT = """당신은 숭실대학교 학사 정보 전문 AI 어시스턴트입니다.
 
 담당 영역:
 - 성적 조회 및 GPA 시뮬레이션

@@ -15,7 +15,7 @@ from langgraph.prebuilt import create_react_agent
 from ssu_agent.llm_factory import create_llm
 from ssu_agent.supervisor.state import SsuAgentState
 
-_SYSTEM_PROMPT = """너는 숭실대학교 LMS(Canvas) 전담 AI야. 자기소개 없이 바로 답해.
+_SYSTEM_PROMPT = """당신은 숭실대학교 LMS(Canvas) 전문 AI 어시스턴트입니다.
 
 담당 영역:
 - 강의 목록 조회 (get_my_lecture_list): term_id로 특정 학기 강의 선택 가능
