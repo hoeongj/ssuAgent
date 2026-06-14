@@ -37,14 +37,14 @@ from __future__ import annotations
 import json
 from typing import Literal
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import create_react_agent
 from langgraph.types import interrupt
 
-from ssu_agent import config
+from ssu_agent.llm_factory import create_llm
 from ssu_agent.supervisor.state import SsuAgentState
 
 _SYSTEM_PROMPT = """당신은 숭실대학교 도서관 전문 AI 어시스턴트입니다.
@@ -90,17 +90,14 @@ def _has_pending_action(state: SsuAgentState) -> Literal["check_approval", "done
 
 def build_library_agent(
     library_tools: list[BaseTool],
-    llm: ChatGoogleGenerativeAI | None = None,
+    llm: BaseChatModel | None = None,
 ) -> StateGraph:
     """Build the Library sub-agent graph (returns an UNCOMPILED StateGraph).
 
     Call .compile(checkpointer=...) on the result before use.
     """
     if llm is None:
-        llm = ChatGoogleGenerativeAI(
-            model=config.GEMINI_MODEL,
-            google_api_key=config.GOOGLE_API_KEY,
-        )
+        llm = create_llm()
 
     # Strip confirm_action — handled by HITL gate node
     agent_tools = [t for t in library_tools if t.name not in _CONFIRM_TOOL_NAMES]

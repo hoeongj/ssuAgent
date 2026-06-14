@@ -11,12 +11,12 @@ chapel attendance, scholarships, and ssuMCP's embedded academic policy RAG
 
 from __future__ import annotations
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph
 from langgraph.prebuilt import create_react_agent
 
-from ssu_agent import config
+from ssu_agent.llm_factory import create_llm
 from ssu_agent.supervisor.state import SsuAgentState
 
 _SYSTEM_PROMPT = """당신은 숭실대학교 학사 정보 전문 AI 어시스턴트입니다.
@@ -39,14 +39,11 @@ mcp_session_id가 있다면 private 도구 호출 시 항상 포함하세요.
 
 def build_academic_agent(
     academic_tools: list[BaseTool],
-    llm: ChatGoogleGenerativeAI | None = None,
+    llm: BaseChatModel | None = None,
 ) -> StateGraph:
     """Build the Academic sub-agent graph."""
     if llm is None:
-        llm = ChatGoogleGenerativeAI(
-            model=config.GEMINI_MODEL,
-            google_api_key=config.GOOGLE_API_KEY,
-        )
+        llm = create_llm()
 
     inner_agent = create_react_agent(llm, academic_tools, prompt=_SYSTEM_PROMPT)
 

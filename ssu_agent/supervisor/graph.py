@@ -54,8 +54,8 @@ from __future__ import annotations
 
 import re
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool, tool
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import create_react_agent
 from langgraph.types import Command
@@ -64,6 +64,7 @@ from ssu_agent import config
 from ssu_agent.agents.academic import build_academic_agent
 from ssu_agent.agents.library import build_library_agent
 from ssu_agent.agents.lms import build_lms_agent
+from ssu_agent.llm_factory import create_llm
 from ssu_agent.supervisor.state import SsuAgentState
 
 # ── Tool-name categorisation ──────────────────────────────────────────────────
@@ -207,7 +208,7 @@ def _post_supervisor(state: SsuAgentState) -> Command:
 
 async def build_supervisor_graph(
     all_tools: list[BaseTool] | None = None,
-    llm: ChatGoogleGenerativeAI | None = None,
+    llm: BaseChatModel | None = None,
     checkpointer=None,
 ):
     """Build and compile the full multi-agent supervisor graph.
@@ -235,10 +236,7 @@ async def build_supervisor_graph(
         all_tools = await client.get_tools()
 
     if llm is None:
-        llm = ChatGoogleGenerativeAI(
-            model=config.GEMINI_MODEL,
-            google_api_key=config.GOOGLE_API_KEY,
-        )
+        llm = create_llm()
 
     if checkpointer is None:
         from langgraph.checkpoint.memory import MemorySaver
