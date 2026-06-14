@@ -38,14 +38,14 @@ def build_lms_agent(
     """Build the LMS sub-agent graph."""
     if llm is None:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
+            model=config.GEMINI_MODEL,
             google_api_key=config.GOOGLE_API_KEY,
         )
 
     inner_agent = create_react_agent(llm, lms_tools, prompt=_SYSTEM_PROMPT)
 
-    def agent_node(state: SsuAgentState) -> dict:
-        result = inner_agent.invoke({"messages": state["messages"]})
+    async def agent_node(state: SsuAgentState) -> dict:
+        result = await inner_agent.ainvoke({"messages": state["messages"]})
         last = result["messages"][-1]
         from langchain_core.messages import AIMessage
 

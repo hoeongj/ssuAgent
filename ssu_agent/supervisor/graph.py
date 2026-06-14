@@ -252,8 +252,8 @@ async def build_supervisor_graph(
     supervisor_tools = [*cats["public"], *cats["auth"], *routing_tools]
     supervisor_react = create_react_agent(llm, supervisor_tools, prompt=_SUPERVISOR_PROMPT)
 
-    def supervisor_node(state: SsuAgentState) -> dict:
-        result = supervisor_react.invoke({"messages": state["messages"]})
+    async def supervisor_node(state: SsuAgentState) -> dict:
+        result = await supervisor_react.ainvoke({"messages": state["messages"]})
         return {"messages": result["messages"]}
 
     # Sub-agent subgraphs — embedded as nodes so interrupt() propagates correctly

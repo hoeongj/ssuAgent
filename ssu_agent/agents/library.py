@@ -98,7 +98,7 @@ def build_library_agent(
     """
     if llm is None:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
+            model=config.GEMINI_MODEL,
             google_api_key=config.GOOGLE_API_KEY,
         )
 
@@ -112,11 +112,11 @@ def build_library_agent(
 
     # ── Nodes ─────────────────────────────────────────────────────────────────
 
-    def agent_node(state: SsuAgentState) -> dict:
-        result = inner_agent.invoke({"messages": state["messages"]})
+    async def agent_node(state: SsuAgentState) -> dict:
+        result = await inner_agent.ainvoke({"messages": state["messages"]})
         return {"messages": result["messages"]}
 
-    def check_approval_node(state: SsuAgentState) -> dict:
+    async def check_approval_node(state: SsuAgentState) -> dict:
         """HITL gate: interrupt for human approval, then execute or cancel."""
         action = _extract_action_id(state["messages"])
         if action is None:
@@ -133,7 +133,7 @@ def build_library_agent(
         if resume.get("approved") and confirm_tool is not None:
             mcp_session_id = state.get("mcp_session_id")
             action_id = resume.get("action_id", action["action_id"])
-            result = confirm_tool.invoke({"mcp_session_id": mcp_session_id, "action_id": action_id})
+            result = await confirm_tool.ainvoke({"mcp_session_id": mcp_session_id, "action_id": action_id})
             msg = AIMessage(content=f"[도서관 에이전트] 예약 확정 완료: {result}")
         else:
             msg = AIMessage(content="[도서관 에이전트] 예약이 취소되었습니다.")
