@@ -15,7 +15,6 @@ from langchain_core.tools import tool
 from ssu_agent.supervisor.graph import build_supervisor_graph, categorise_tools
 from ssu_agent.supervisor.state import SsuAgentState
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
@@ -126,15 +125,18 @@ def test_state_has_required_keys():
 
 class _MockLLM(FakeMessagesListChatModel):
     """Fake LLM that always returns a direct answer (no tool calls, no routing)."""
+
     def bind_tools(self, tools, **kwargs):
         return self
 
 
 def _make_mock_llm() -> _MockLLM:
-    return _MockLLM(responses=[
-        AIMessage(content="테스트 응답: 오늘 학식은 제육볶음입니다."),
-        AIMessage(content="테스트 응답: 오늘 학식은 제육볶음입니다."),
-    ])
+    return _MockLLM(
+        responses=[
+            AIMessage(content="테스트 응답: 오늘 학식은 제육볶음입니다."),
+            AIMessage(content="테스트 응답: 오늘 학식은 제육볶음입니다."),
+        ]
+    )
 
 
 @pytest.mark.asyncio
@@ -180,7 +182,8 @@ async def test_graph_initial_state_has_mcp_session():
 def test_route_marker_regex():
     """post_supervisor correctly extracts routing markers from messages."""
     from langchain_core.messages import ToolMessage
-    from ssu_agent.supervisor.graph import _post_supervisor, _ROUTE_PREFIX
+
+    from ssu_agent.supervisor.graph import _ROUTE_PREFIX, _post_supervisor
 
     state: SsuAgentState = {
         "messages": [
@@ -211,5 +214,6 @@ def test_no_route_marker_goes_to_end():
         "pending_action": None,
     }
     from langgraph.graph import END
+
     cmd = _post_supervisor(state)
     assert cmd.goto is END

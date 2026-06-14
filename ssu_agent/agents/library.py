@@ -35,7 +35,7 @@ Tool split:
 from __future__ import annotations
 
 import json
-from typing import Callable, Literal
+from typing import Literal
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
@@ -61,8 +61,11 @@ mcp_session_id가 state에 있다면 private 도구 호출 시 항상 포함하�
 """
 
 _CONFIRM_TOOL_NAMES = {"confirm_action"}
-_PREPARE_TOOL_NAMES = {"prepare_reserve_library_seat", "prepare_swap_library_seat",
-                       "prepare_cancel_library_seat"}
+_PREPARE_TOOL_NAMES = {
+    "prepare_reserve_library_seat",
+    "prepare_swap_library_seat",
+    "prepare_cancel_library_seat",
+}
 
 
 def _extract_action_id(messages: list) -> dict | None:
@@ -130,9 +133,7 @@ def build_library_agent(
         if resume.get("approved") and confirm_tool is not None:
             mcp_session_id = state.get("mcp_session_id")
             action_id = resume.get("action_id", action["action_id"])
-            result = confirm_tool.invoke(
-                {"mcp_session_id": mcp_session_id, "action_id": action_id}
-            )
+            result = confirm_tool.invoke({"mcp_session_id": mcp_session_id, "action_id": action_id})
             msg = AIMessage(content=f"[도서관 에이전트] 예약 확정 완료: {result}")
         else:
             msg = AIMessage(content="[도서관 에이전트] 예약이 취소되었습니다.")

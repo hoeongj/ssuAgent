@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ssu-agent
+  namespace: argocd
+  annotations:
+    argocd-image-updater.argoproj.io/image-list: "agent=ghcr.io/ghdtjdwn/ssuagent"
+    argocd-image-updater.argoproj.io/agent.update-strategy: "newest-build"
+    argocd-image-updater.argoproj.io/agent.allow-tags: "regexp:^sha-[0-9a-f]{40}$"
+    argocd-image-updater.argoproj.io/agent.helm.image-name: "image.repository"
+    argocd-image-updater.argoproj.io/agent.helm.image-tag: "image.tag"
+    argocd-image-updater.argoproj.io/write-back-method: "git:secret:argocd/argocd-image-updater-git-creds"
+    argocd-image-updater.argoproj.io/git-branch: "main"
+    argocd-image-updater.argoproj.io/write-back-target: "helmvalues:values.yaml"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ghdtjdwn/ssuAgent.git
+    targetRevision: main
+    path: deploy/charts/ssu-agent
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ssuai-prod
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true

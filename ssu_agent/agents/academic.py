@@ -55,6 +55,7 @@ def build_academic_agent(
         last = result["messages"][-1]
         # Tag response so supervisor can identify sub-agent completion
         from langchain_core.messages import AIMessage
+
         tagged = AIMessage(content=f"[학사 에이전트] {last.content}")
         return {"messages": [tagged], "active_agent": None}
 

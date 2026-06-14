@@ -32,6 +32,7 @@ ACADEMIC_TOOLS = [get_my_grades, search_academic_policy_sources]
 
 class _MockAcademicLLM(FakeMessagesListChatModel):
     """Fake chat model that returns a fixed academic answer. bind_tools returns self."""
+
     def bind_tools(self, tools, **kwargs):
         return self
 

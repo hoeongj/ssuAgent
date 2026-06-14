@@ -48,6 +48,7 @@ def build_lms_agent(
         result = inner_agent.invoke({"messages": state["messages"]})
         last = result["messages"][-1]
         from langchain_core.messages import AIMessage
+
         tagged = AIMessage(content=f"[LMS 에이전트] {last.content}")
         return {"messages": [tagged], "active_agent": None}
 

@@ -20,11 +20,16 @@ MCP session lifecycle (thread_id ↔ mcp_session_id):
   sub-agents can include it in private MCP tool calls.
 
   The two IDs are intentionally separate:
-  - thread_id: conversation persistence (SQLite checkpoint)
+  - thread_id: conversation persistence (Postgres checkpoint)
   - mcp_session_id: ssuMCP auth (externally managed by ssuAI login flow)
   A single thread can switch mcp_session_id across requests (e.g. re-login),
   so the graph always takes the latest value from the request rather than
   reading it from checkpoint.
+
+Checkpointer (Postgres):
+  Uses AsyncPostgresSaver from langgraph-checkpoint-postgres backed by
+  an AsyncConnectionPool (psycopg3). autocommit=True is required by LangGraph.
+  setup() creates the checkpoint tables on first startup.
 
 Streaming optimisation (Gemini suggestion applied):
   astream_events(version="v2") yields rich event dicts. We filter:
@@ -43,7 +48,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from ssu_agent import config
@@ -55,13 +61,15 @@ _graph = None
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """FastAPI lifespan: open SQLite connection, build graph, keep alive."""
-    # SqliteSaver.from_conn_string returns a context manager (not the saver itself).
-    # The `with` block keeps the SQLite connection open for the whole app lifetime,
-    # which is required for HITL resume: the checkpoint must be readable when the
-    # client POSTs to /agent/resume — which may be seconds or minutes later.
+    """FastAPI lifespan: open Postgres connection pool, build graph, keep alive."""
     global _graph
-    with SqliteSaver.from_conn_string(config.SQLITE_DB_PATH) as checkpointer:
+    async with AsyncConnectionPool(
+        conninfo=config.DATABASE_URL,
+        max_size=5,
+        kwargs={"autocommit": True, "prepare_threshold": 0},
+    ) as pool:
+        checkpointer = AsyncPostgresSaver(pool)
+        await checkpointer.setup()
         _graph = await build_supervisor_graph(checkpointer=checkpointer)
         yield
 
@@ -81,7 +89,7 @@ app.add_middleware(
 
 class AgentRequest(BaseModel):
     message: str
-    thread_id: str = ""          # "" → new conversation
+    thread_id: str = ""  # "" → new conversation
     mcp_session_id: str | None = None
 
 
@@ -114,8 +122,14 @@ async def _stream_graph(input_data: dict | object, config: dict):
         elif etype == "on_tool_start":
             if name.startswith("transfer_to_"):
                 agent = name.replace("transfer_to_", "").replace("_agent", "")
-                yield _sse({"type": "handoff", "agent": agent,
-                             "status": "routing", "message": f"{agent} 에이전트로 전환 중..."})
+                yield _sse(
+                    {
+                        "type": "handoff",
+                        "agent": agent,
+                        "status": "routing",
+                        "message": f"{agent} 에이전트로 전환 중...",
+                    }
+                )
             else:
                 yield _sse({"type": "tool", "name": name})
 

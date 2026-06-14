@@ -19,7 +19,6 @@ from langchain_core.tools import tool
 from ssu_agent.agents.library import _extract_action_id, build_library_agent
 from ssu_agent.supervisor.state import SsuAgentState
 
-
 # ── Mock tools ────────────────────────────────────────────────────────────────
 
 
@@ -87,24 +86,29 @@ def test_extract_action_id_handles_malformed_json():
 
 class _MockLibraryLLM(FakeMessagesListChatModel):
     """Fake LLM: first call returns a prepare_reserve tool call, second returns final text."""
+
     def bind_tools(self, tools, **kwargs):
         return self
 
 
 def _make_library_llm() -> _MockLibraryLLM:
     """Two-step response: tool call → synthesis (matches ReAct loop)."""
-    return _MockLibraryLLM(responses=[
-        AIMessage(
-            content="",
-            tool_calls=[{
-                "id": "tc-1",
-                "name": "prepare_reserve_library_seat",
-                "args": {"mcp_session_id": "sess-001", "seat_id": 42},
-                "type": "tool_call",
-            }],
-        ),
-        AIMessage(content="예약 준비 완료. 승인 대기 중입니다."),
-    ])
+    return _MockLibraryLLM(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-1",
+                        "name": "prepare_reserve_library_seat",
+                        "args": {"mcp_session_id": "sess-001", "seat_id": 42},
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="예약 준비 완료. 승인 대기 중입니다."),
+        ]
+    )
 
 
 def test_library_agent_excludes_confirm_action():

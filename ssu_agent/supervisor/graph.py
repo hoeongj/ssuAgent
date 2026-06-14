@@ -53,12 +53,9 @@ Streaming:
 from __future__ import annotations
 
 import re
-from typing import Literal
 
-from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool, tool
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import create_react_agent
 from langgraph.types import Command
@@ -72,22 +69,38 @@ from ssu_agent.supervisor.state import SsuAgentState
 # ── Tool-name categorisation ──────────────────────────────────────────────────
 
 _LIBRARY_PREFIXES = (
-    "get_library", "recommend_library", "search_library",
-    "get_my_library", "prepare_", "confirm_action",
-    "wait_for_library", "get_library_wait", "cancel_library_wait",
+    "get_library",
+    "recommend_library",
+    "search_library",
+    "get_my_library",
+    "prepare_",
+    "confirm_action",
+    "wait_for_library",
+    "get_library_wait",
+    "cancel_library_wait",
     "get_room_available",
 )
 _ACADEMIC_NAMES = {
-    "get_my_grades", "check_graduation_requirements", "simulate_gpa",
-    "evaluate_graduation_with_policy", "classify_academic_question",
-    "search_academic_policy_sources", "get_academic_policy_brief",
-    "check_scholarship_policy", "list_academic_policy_sources",
-    "get_academic_calendar", "find_academic_calendar_events",
-    "get_my_schedule", "get_my_chapel_info", "get_my_scholarships",
+    "get_my_grades",
+    "check_graduation_requirements",
+    "simulate_gpa",
+    "evaluate_graduation_with_policy",
+    "classify_academic_question",
+    "search_academic_policy_sources",
+    "get_academic_policy_brief",
+    "check_scholarship_policy",
+    "list_academic_policy_sources",
+    "get_academic_calendar",
+    "find_academic_calendar_events",
+    "get_my_schedule",
+    "get_my_chapel_info",
+    "get_my_scholarships",
 }
 _LMS_NAMES = {
-    "get_my_lecture_list", "get_lecture_transcript",
-    "get_my_assignments", "get_my_lms_terms",
+    "get_my_lecture_list",
+    "get_lecture_transcript",
+    "get_my_assignments",
+    "get_my_lms_terms",
 }
 _AUTH_NAMES = {"start_auth", "get_auth_status", "logout_provider", "logout_all"}
 
@@ -95,7 +108,11 @@ _AUTH_NAMES = {"start_auth", "get_auth_status", "logout_provider", "logout_all"}
 def categorise_tools(all_tools: list[BaseTool]) -> dict[str, list[BaseTool]]:
     """Split MCP tools into domain buckets used by the supervisor and sub-agents."""
     cats: dict[str, list[BaseTool]] = {
-        "library": [], "academic": [], "lms": [], "auth": [], "public": [],
+        "library": [],
+        "academic": [],
+        "lms": [],
+        "auth": [],
+        "public": [],
     }
     for t in all_tools:
         name = t.name
@@ -157,14 +174,16 @@ _ROUTE_RE = re.compile(r"ROUTE_TO:(\w+)")
 _SUPERVISOR_PROMPT = """당신은 숭실대학교 AI 어시스턴트 "숭실이"의 수퍼바이저입니다.
 
 역할:
-1. 식단(meal), 공지(notice), 캠퍼스 시설(facility), 인증(auth) 관련 간단한 질문은 직접 도구를 호출해 답합니다.
+1. 식단(meal), 공지(notice), 캠퍼스 시설(facility), 인증(auth) 관련
+   간단한 질문은 직접 도구를 호출해 답합니다.
 2. 도서관(library), 학사(academic), LMS 관련 전문 질문은 해당 에이전트로 전달합니다:
    - 도서관 좌석/예약/도서 → transfer_to_library_agent
    - 성적/졸업/장학/학칙 → transfer_to_academic_agent
    - LMS 강의/과제 → transfer_to_lms_agent
 
 전달 시 사용자의 원래 질문을 query에 그대로 포함하세요.
-이미 하위 에이전트 답변([도서관/학사/LMS 에이전트])이 대화에 있다면 별도 도구 호출 없이 답변을 요약해 사용자에게 전달하세요.
+이미 하위 에이전트 답변([도서관/학사/LMS 에이전트])이 대화에 있다면
+별도 도구 호출 없이 답변을 요약해 사용자에게 전달하세요.
 """
 
 
@@ -223,6 +242,7 @@ async def build_supervisor_graph(
 
     if checkpointer is None:
         from langgraph.checkpoint.memory import MemorySaver
+
         checkpointer = MemorySaver()
 
     cats = categorise_tools(all_tools)
@@ -238,12 +258,8 @@ async def build_supervisor_graph(
 
     # Sub-agent subgraphs — embedded as nodes so interrupt() propagates correctly
     library_subgraph = build_library_agent(cats["library"], llm).compile()
-    academic_subgraph = build_academic_agent(
-        [*cats["academic"], *cats["auth"]], llm
-    ).compile()
-    lms_subgraph = build_lms_agent(
-        [*cats["lms"], *cats["auth"]], llm
-    ).compile()
+    academic_subgraph = build_academic_agent([*cats["academic"], *cats["auth"]], llm).compile()
+    lms_subgraph = build_lms_agent([*cats["lms"], *cats["auth"]], llm).compile()
 
     # Parent graph assembly
     builder = StateGraph(SsuAgentState)

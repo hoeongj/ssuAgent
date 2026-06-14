@@ -1,0 +1,7 @@
+# Production overrides
+# image.tag is auto-updated by ArgoCD Image Updater (write-back to values.yaml)
+# Secrets must be created manually:
+#   kubectl create secret generic ssuagent-secrets \
+#     --namespace ssuai-prod \
+#     --from-literal=GOOGLE_API_KEY=<key> \
+#     --from-literal=DATABASE_URL="postgresql://ssuai:<password>@postgres-service:5432/ssuai"
