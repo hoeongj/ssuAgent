@@ -236,7 +236,7 @@ async def build_supervisor_graph(
 
     if llm is None:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
+            model=config.GEMINI_MODEL,
             google_api_key=config.GOOGLE_API_KEY,
         )
 
