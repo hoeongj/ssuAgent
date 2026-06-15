@@ -42,6 +42,7 @@ Streaming optimisation (Gemini suggestion applied):
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from contextlib import asynccontextmanager
 
@@ -54,6 +55,8 @@ from pydantic import BaseModel
 
 from ssu_agent import config
 from ssu_agent.supervisor.graph import build_supervisor_graph
+
+logger = logging.getLogger(__name__)
 
 # Graph reference — set during lifespan startup
 _graph = None
@@ -145,6 +148,7 @@ async def _stream_graph(input_data: dict | object, config: dict):
                 return  # Pause SSE; client waits for /agent/resume
 
     except Exception as exc:
+        logger.exception("agent stream failed")
         yield _sse({"type": "error", "message": str(exc)})
         return
 
