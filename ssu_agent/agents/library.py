@@ -82,6 +82,39 @@ def _build_library_prompt(mcp_session_id: str | None) -> str:
     return prompt
 
 
+def _drop_routing_messages(messages: list) -> list:
+    """Remove supervisor transfer_to_* tool calls and their ToolMessage results.
+
+    When the supervisor routes to library_agent it leaves an AIMessage with a
+    transfer_to_library_agent tool call + a ToolMessage("ROUTE_TO:library_agent")
+    in the shared state. Groq llama-3.3-70b sees the trailing ToolMessage and
+    produces a text completion instead of calling library tools. Strip those
+    routing artifacts so the inner ReAct agent sees a clean user→ conversation.
+    """
+    routing_call_ids: set[str] = set()
+    for msg in messages:
+        if (
+            isinstance(msg, AIMessage)
+            and msg.tool_calls
+            and all(tc.get("name", "").startswith("transfer_to_") for tc in msg.tool_calls)
+        ):
+            for tc in msg.tool_calls:
+                routing_call_ids.add(tc.get("id", ""))
+
+    result = []
+    for msg in messages:
+        if (
+            isinstance(msg, AIMessage)
+            and msg.tool_calls
+            and all(tc.get("name", "").startswith("transfer_to_") for tc in msg.tool_calls)
+        ):
+            continue
+        if isinstance(msg, ToolMessage) and msg.tool_call_id in routing_call_ids:
+            continue
+        result.append(msg)
+    return result
+
+
 _CONFIRM_TOOL_NAMES = {"confirm_action"}
 _PREPARE_TOOL_NAMES = {
     "prepare_reserve_library_seat",
@@ -134,11 +167,12 @@ def build_library_agent(
     async def agent_node(state: SsuAgentState) -> dict:
         mcp_session_id = state.get("mcp_session_id")
         prompt = _build_library_prompt(mcp_session_id)
+        messages = _drop_routing_messages(state["messages"])
         last_exc: Exception | None = None
         for _llm in llm_seq:
             try:
                 inner = create_react_agent(_llm, agent_tools, prompt=prompt)
-                result = await inner.ainvoke({"messages": state["messages"]})
+                result = await inner.ainvoke({"messages": messages})
                 return {"messages": result["messages"]}
             except Exception as exc:
                 last_exc = exc

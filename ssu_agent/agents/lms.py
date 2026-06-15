@@ -12,6 +12,7 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph
 from langgraph.prebuilt import create_react_agent
 
+from ssu_agent.agents.library import _drop_routing_messages
 from ssu_agent.llm_factory import create_llm, get_llm_sequence
 from ssu_agent.supervisor.state import SsuAgentState
 
@@ -55,7 +56,8 @@ def build_lms_agent(
         for _llm in llm_seq:
             try:
                 agent = create_react_agent(_llm, lms_tools, prompt=prompt)
-                result = await agent.ainvoke({"messages": state["messages"]})
+                msgs = _drop_routing_messages(state["messages"])
+                result = await agent.ainvoke({"messages": msgs})
                 last = result["messages"][-1]
                 from langchain_core.messages import AIMessage
 
