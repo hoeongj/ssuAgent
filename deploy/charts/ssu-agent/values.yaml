@@ -2,7 +2,7 @@ namespace: ssuai-prod
 replicaCount: 1
 image:
   repository: ghcr.io/hoeongj/ssuagent
-  tag: sha-896cc9f7c283e3e2be3b3dbd2ec90e7c0f018415
+  tag: sha-416ca242c28706c311d9a1b6c62e10d7c2f4c9ea
   pullPolicy: Always
 nameOverride: ""
 fullnameOverride: ""
