@@ -6,6 +6,11 @@ Provider priority (Groq first — higher free-tier quota):
   2. Google Gemini        — 20 req/day free tier, high quality
   3. OpenRouter           — catch-all aggregator, many free models
 
+NOTE: Use ChatGroq (not ChatOpenAI with Groq base_url) for Groq — the
+generic ChatOpenAI wrapper serializes assistant content as a list of
+content blocks, which Groq's API rejects with a 400 on the second tool
+call turn. ChatGroq handles the string-content conversion internally.
+
 NOTE: langchain_core 1.4.x RunnableWithFallbacks lacks bind_tools, so
 with_fallbacks() breaks when create_react_agent calls model.bind_tools()
 internally. Use get_llm_sequence() + per-agent retry loops instead.
@@ -23,12 +28,11 @@ def get_llm_sequence() -> list[BaseChatModel]:
     llms: list[BaseChatModel] = []
 
     if config.GROQ_API_KEY:
-        from langchain_openai import ChatOpenAI
+        from langchain_groq import ChatGroq
 
         llms.append(
-            ChatOpenAI(
+            ChatGroq(
                 model="llama-3.3-70b-versatile",
-                base_url="https://api.groq.com/openai/v1",
                 api_key=config.GROQ_API_KEY,
                 max_retries=1,
             )
