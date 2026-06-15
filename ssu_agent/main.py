@@ -61,6 +61,34 @@ logger = logging.getLogger(__name__)
 # Graph reference — set during lifespan startup
 _graph = None
 
+_TOOL_LABELS: dict[str, str] = {
+    "prepare_reserve_library_seat": "좌석 예약 준비 중...",
+    "prepare_swap_library_seat": "좌석 이석 준비 중...",
+    "prepare_cancel_library_seat": "좌석 반납 준비 중...",
+    "confirm_action": "예약 확정 중...",
+    "get_library_available_seats": "이용 가능 좌석 조회 중...",
+    "get_library_seat_status": "좌석 상태 확인 중...",
+    "get_library_seat_catalog": "좌석 목록 조회 중...",
+    "recommend_library_seats": "좌석 추천 중...",
+    "get_my_library_seat": "내 좌석 확인 중...",
+    "get_my_library_loans": "대출 현황 조회 중...",
+    "search_library_book": "도서 검색 중...",
+    "get_auth_status": "인증 상태 확인 중...",
+    "start_auth": "로그인 시작 중...",
+    "get_my_grades": "성적 조회 중...",
+    "get_my_schedule": "시간표 조회 중...",
+    "get_my_chapel_info": "채플 정보 조회 중...",
+    "get_my_scholarships": "장학금 조회 중...",
+    "simulate_gpa": "GPA 시뮬레이션 중...",
+    "check_graduation_requirements": "졸업 요건 확인 중...",
+    "get_my_lecture_list": "강의 목록 조회 중...",
+    "get_my_assignments": "과제 목록 조회 중...",
+    "get_lecture_transcript": "강의 자막 불러오는 중...",
+    "get_today_meal": "오늘 식단 조회 중...",
+    "get_meal_by_date": "식단 조회 중...",
+    "search_campus_facilities": "캠퍼스 시설 검색 중...",
+}
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -140,7 +168,8 @@ async def _stream_graph(input_data: dict | object, config: dict):
                         }
                     )
                 else:
-                    yield _sse({"type": "tool", "name": name})
+                    label = _TOOL_LABELS.get(name, name)
+                    yield _sse({"type": "tool", "name": name, "label": label})
 
             elif etype == "on_interrupt":
                 interrupt_data = event.get("data", {})

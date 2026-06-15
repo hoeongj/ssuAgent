@@ -254,7 +254,7 @@ async def build_supervisor_graph(
         return {"messages": result["messages"]}
 
     # Sub-agent subgraphs — embedded as nodes so interrupt() propagates correctly
-    library_subgraph = build_library_agent(cats["library"], llm).compile()
+    library_subgraph = build_library_agent([*cats["library"], *cats["auth"]], llm).compile()
     academic_subgraph = build_academic_agent([*cats["academic"], *cats["auth"]], llm).compile()
     lms_subgraph = build_lms_agent([*cats["lms"], *cats["auth"]], llm).compile()
 
