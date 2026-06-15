@@ -55,6 +55,7 @@ from __future__ import annotations
 import re
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import create_react_agent
@@ -63,7 +64,7 @@ from langgraph.types import Command
 from ssu_agent.agents.academic import build_academic_agent
 from ssu_agent.agents.library import build_library_agent
 from ssu_agent.agents.lms import build_lms_agent
-from ssu_agent.llm_factory import create_llm
+from ssu_agent.llm_factory import get_llm_sequence
 from ssu_agent.supervisor.state import SsuAgentState
 
 # ── Tool-name categorisation ──────────────────────────────────────────────────
@@ -234,9 +235,6 @@ async def build_supervisor_graph(
         client = create_mcp_client()
         all_tools = await client.get_tools()
 
-    if llm is None:
-        llm = create_llm()
-
     if checkpointer is None:
         from langgraph.checkpoint.memory import MemorySaver
 
@@ -247,11 +245,18 @@ async def build_supervisor_graph(
 
     # Supervisor: public tools (meal/notice/campus) + auth + lightweight routing tools
     supervisor_tools = [*cats["public"], *cats["auth"], *routing_tools]
-    supervisor_react = create_react_agent(llm, supervisor_tools, prompt=_SUPERVISOR_PROMPT)
+    llm_seq = [llm] if llm is not None else get_llm_sequence()
 
-    async def supervisor_node(state: SsuAgentState) -> dict:
-        result = await supervisor_react.ainvoke({"messages": state["messages"]})
-        return {"messages": result["messages"]}
+    async def supervisor_node(state: SsuAgentState, config: RunnableConfig) -> dict:
+        last_exc: Exception | None = None
+        for _llm in llm_seq:
+            try:
+                react = create_react_agent(_llm, supervisor_tools, prompt=_SUPERVISOR_PROMPT)
+                result = await react.ainvoke({"messages": state["messages"]}, config=config)
+                return {"messages": result["messages"]}
+            except Exception as exc:
+                last_exc = exc
+        raise last_exc or RuntimeError("All LLM providers exhausted")
 
     # Sub-agent subgraphs — embedded as nodes so interrupt() propagates correctly
     library_subgraph = build_library_agent([*cats["library"], *cats["auth"]], llm).compile()
