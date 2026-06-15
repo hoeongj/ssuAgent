@@ -70,6 +70,7 @@ def _build_library_prompt(mcp_session_id: str | None) -> str:
         )
     return prompt
 
+
 _CONFIRM_TOOL_NAMES = {"confirm_action"}
 _PREPARE_TOOL_NAMES = {
     "prepare_reserve_library_seat",
