@@ -15,7 +15,7 @@ from langgraph.prebuilt import create_react_agent
 from ssu_agent.llm_factory import create_llm
 from ssu_agent.supervisor.state import SsuAgentState
 
-_SYSTEM_PROMPT = """당신은 숭실대학교 LMS(Canvas) 전문 AI 어시스턴트입니다.
+_SYSTEM_PROMPT_BASE = """당신은 숭실대학교 LMS(Canvas) 전문 AI 어시스턴트입니다.
 
 담당 영역:
 - 강의 목록 조회 (get_my_lecture_list): term_id로 특정 학기 강의 선택 가능
@@ -25,10 +25,18 @@ _SYSTEM_PROMPT = """당신은 숭실대학교 LMS(Canvas) 전문 AI 어시스턴
 
 학기 관련 주의: Canvas API는 6월에 여름학기를 기본(default)으로 반환하므로,
 1학기 강의나 과제를 조회할 때는 get_my_lms_terms로 학기 목록을 먼저 조회하고
-올바른 term_id를 사용하세요.
+올바른 term_id를 사용하세요."""
 
-mcp_session_id가 있다면 항상 포함하세요.
-"""
+
+def _build_lms_prompt(mcp_session_id: str | None) -> str:
+    prompt = _SYSTEM_PROMPT_BASE
+    if mcp_session_id:
+        prompt += (
+            f'\n\n[인증 세션] mcp_session_id = "{mcp_session_id}"\n'
+            "get_my_lecture_list, get_lecture_transcript, get_my_assignments, get_my_lms_terms "
+            "호출 시 이 값을 mcp_session_id 파라미터로 반드시 포함하세요."
+        )
+    return prompt
 
 
 def build_lms_agent(
@@ -39,10 +47,11 @@ def build_lms_agent(
     if llm is None:
         llm = create_llm()
 
-    inner_agent = create_react_agent(llm, lms_tools, prompt=_SYSTEM_PROMPT)
-
     async def agent_node(state: SsuAgentState) -> dict:
-        result = await inner_agent.ainvoke({"messages": state["messages"]})
+        mcp_session_id = state.get("mcp_session_id")
+        prompt = _build_lms_prompt(mcp_session_id)
+        agent = create_react_agent(llm, lms_tools, prompt=prompt)
+        result = await agent.ainvoke({"messages": state["messages"]})
         last = result["messages"][-1]
         from langchain_core.messages import AIMessage
 

@@ -47,18 +47,28 @@ from langgraph.types import interrupt
 from ssu_agent.llm_factory import create_llm
 from ssu_agent.supervisor.state import SsuAgentState
 
-_SYSTEM_PROMPT = """당신은 숭실대학교 도서관 전문 AI 어시스턴트입니다.
+_SYSTEM_PROMPT_BASE = """당신은 숭실대학교 도서관 전문 AI 어시스턴트입니다.
 
 사용 가능한 도구:
 - 좌석 현황 조회, 좌석 추천, 도서 검색, 대출 현황
-- 좌석 예약 준비 (prepare_reserve_library_seat): 예약 초안을 만들고 사용자에게 확인을 받습니다.
-- 좌석 이석/반납 준비 (prepare_swap/cancel_library_seat): 마찬가지로 확인 후 실행됩니다.
+- 좌석 예약 준비 (prepare_reserve_library_seat)
+- 좌석 이석/반납 준비 (prepare_swap/cancel_library_seat)
 
-중요: prepare_* 도구는 안전한 준비 단계입니다. 이 단계에서는 아무것도 실행되지 않습니다.
-confirm_action은 시스템이 사용자 승인 후 자동으로 호출합니다.
+행동 규칙:
+- 예약·이석·반납 요청이 오면 즉시 prepare_* 도구를 호출하세요. 언어적으로 재확인하지 마세요.
+- prepare_* 호출 후 시스템이 자동으로 승인 창을 표시하고, 사용자 승인 후 confirm_action을 실행합니다.
+- confirm_action은 직접 호출하지 마세요. 시스템이 처리합니다."""
 
-mcp_session_id가 state에 있다면 private 도구 호출 시 항상 포함하세요.
-"""
+
+def _build_library_prompt(mcp_session_id: str | None) -> str:
+    prompt = _SYSTEM_PROMPT_BASE
+    if mcp_session_id:
+        prompt += (
+            f'\n\n[인증 세션] mcp_session_id = "{mcp_session_id}"\n'
+            "prepare_*, get_my_library_*, get_my_library_seat 등 인증이 필요한 도구 호출 시 "
+            "이 값을 mcp_session_id 파라미터로 반드시 포함하세요."
+        )
+    return prompt
 
 _CONFIRM_TOOL_NAMES = {"confirm_action"}
 _PREPARE_TOOL_NAMES = {
@@ -105,12 +115,13 @@ def build_library_agent(
         (t for t in library_tools if t.name == "confirm_action"), None
     )
 
-    inner_agent = create_react_agent(llm, agent_tools, prompt=_SYSTEM_PROMPT)
-
     # ── Nodes ─────────────────────────────────────────────────────────────────
 
     async def agent_node(state: SsuAgentState) -> dict:
-        result = await inner_agent.ainvoke({"messages": state["messages"]})
+        mcp_session_id = state.get("mcp_session_id")
+        prompt = _build_library_prompt(mcp_session_id)
+        inner = create_react_agent(llm, agent_tools, prompt=prompt)
+        result = await inner.ainvoke({"messages": state["messages"]})
         return {"messages": result["messages"]}
 
     async def check_approval_node(state: SsuAgentState) -> dict:
