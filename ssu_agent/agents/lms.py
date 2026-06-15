@@ -1,5 +1,5 @@
 """
-LMS sub-agent — lecture lists, transcripts, and assignments.
+LMS sub-agent — assignments and LMS terms.
 
 Uses direct bind_tools loop (not create_react_agent) to avoid turn-2 looping
 and enable per-provider fallback.
@@ -23,13 +23,11 @@ from ssu_agent.supervisor.state import SsuAgentState
 _SYSTEM_PROMPT_BASE = """당신은 숭실대학교 LMS(Canvas) 전문 AI 어시스턴트입니다.
 
 담당 영역:
-- 강의 목록 조회 (get_my_lecture_list): term_id로 특정 학기 강의 선택 가능
-- 강의 자막/STT 전사 (get_lecture_transcript): 특정 강의의 자막 또는 음성 텍스트
 - 과제 목록 조회 (get_my_assignments): compact=true 옵션으로 요약 제공
 - LMS 학기 목록 (get_my_lms_terms): 학기 선택 시 먼저 이 도구로 학기 ID를 확인하세요.
 
 학기 관련 주의: Canvas API는 6월에 여름학기를 기본(default)으로 반환하므로,
-1학기 강의나 과제를 조회할 때는 get_my_lms_terms로 학기 목록을 먼저 조회하고
+1학기 과제를 조회할 때는 get_my_lms_terms로 학기 목록을 먼저 조회하고
 올바른 term_id를 사용하세요."""
 
 
@@ -38,7 +36,7 @@ def _build_lms_prompt(mcp_session_id: str | None) -> str:
     if mcp_session_id:
         prompt += (
             f'\n\n[인증 세션] mcp_session_id = "{mcp_session_id}"\n'
-            "get_my_lecture_list, get_lecture_transcript, get_my_assignments, get_my_lms_terms "
+            "get_my_assignments, get_my_lms_terms "
             "호출 시 이 값을 mcp_session_id 파라미터로 반드시 포함하세요."
         )
     return prompt
