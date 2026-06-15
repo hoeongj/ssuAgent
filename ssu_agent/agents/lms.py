@@ -1,16 +1,20 @@
 """
 LMS sub-agent — lecture lists, transcripts, and assignments.
 
-Uses create_react_agent because all tools are read-only.
+Uses direct bind_tools loop (not create_react_agent) to avoid turn-2 looping
+and enable per-provider fallback.
 Supports optional term_id for semester selection (LMS term bug fix, PR #61).
 """
 
 from __future__ import annotations
 
+import json
+
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph
-from langgraph.prebuilt import create_react_agent
 
 from ssu_agent.agents.library import _drop_routing_messages
 from ssu_agent.llm_factory import create_llm, get_llm_sequence
@@ -49,22 +53,69 @@ def build_lms_agent(
     if not llm_seq:
         llm_seq = [create_llm()]
 
-    async def agent_node(state: SsuAgentState) -> dict:
+    async def agent_node(state: SsuAgentState, config: RunnableConfig) -> dict:
         mcp_session_id = state.get("mcp_session_id")
         prompt = _build_lms_prompt(mcp_session_id)
+        messages = _drop_routing_messages(state["messages"])
+        input_messages = [SystemMessage(content=prompt), *messages]
+
         last_exc: Exception | None = None
         for _llm in llm_seq:
             try:
-                agent = create_react_agent(_llm, lms_tools, prompt=prompt)
-                msgs = _drop_routing_messages(state["messages"])
-                result = await agent.ainvoke({"messages": msgs})
-                last = result["messages"][-1]
-                from langchain_core.messages import AIMessage
+                llm_with_tools = _llm.bind_tools(lms_tools)
+                history = list(input_messages)
 
-                tagged = AIMessage(content=f"[LMS 에이전트] {last.content}")
+                for _ in range(6):
+                    response = await llm_with_tools.ainvoke(history, config=config)
+                    history.append(response)
+
+                    if not response.tool_calls:
+                        break
+
+                    for tc in response.tool_calls:
+                        matched = next(
+                            (t for t in lms_tools if t.name == tc["name"]), None
+                        )
+                        if matched is None:
+                            history.append(
+                                ToolMessage(
+                                    content=f"Tool '{tc['name']}' not found.",
+                                    tool_call_id=tc.get("id", ""),
+                                )
+                            )
+                            continue
+                        try:
+                            result = await matched.ainvoke(
+                                tc.get("args", {}), config=config
+                            )
+                            content = (
+                                result
+                                if isinstance(result, str)
+                                else json.dumps(result, ensure_ascii=False)
+                            )
+                        except Exception as tool_exc:
+                            content = f"Tool error: {tool_exc}"
+                        history.append(
+                            ToolMessage(content=content, tool_call_id=tc.get("id", ""))
+                        )
+
+                last_ai = next(
+                    (
+                        m
+                        for m in reversed(history[len(input_messages):])
+                        if isinstance(m, AIMessage) and m.content
+                    ),
+                    None,
+                )
+                tagged = AIMessage(
+                    content=f"[LMS 에이전트] {last_ai.content}"
+                    if last_ai
+                    else "[LMS 에이전트] 처리 완료"
+                )
                 return {"messages": [tagged], "active_agent": None}
             except Exception as exc:
                 last_exc = exc
+
         raise last_exc or RuntimeError("All LLM providers exhausted")
 
     graph = StateGraph(SsuAgentState)

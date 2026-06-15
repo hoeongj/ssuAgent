@@ -27,9 +27,19 @@ Why interrupt() must be in a NODE (not a router/edge function):
   skip checkpointing, causing silent data loss on resume.
 
 Tool split:
-  Inner ReAct agent has ALL library tools EXCEPT confirm_action.
+  Inner ReAct loop has ALL library tools EXCEPT confirm_action.
   The agent is encouraged to call prepare_* which returns an actionId.
   The graph layer enforces the approval gate before running confirm_action.
+
+Why manual bind_tools loop instead of create_react_agent:
+  In controlled A/B testing (turn-2 path: prepare_* → AUTH_REQUIRED → start_auth),
+  create_react_agent exhibited looping — it called prepare_reserve_library_seat
+  twice instead of advancing to start_auth on the second turn. In the HITL flow
+  this would produce two distinct actionIds; _extract_action_id scans recent
+  ToolMessages and would gate on the wrong/stale action, breaking the approval gate.
+  The manual loop's explicit break-after-actionId prevents this entirely.
+  (A malformed <function=...> XML tool call was observed once in production logs,
+  but was not reproducible in controlled testing — XML causation is unconfirmed.)
 """
 
 from __future__ import annotations
@@ -38,10 +48,10 @@ import json
 from typing import Literal
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
-from langgraph.prebuilt import create_react_agent
 from langgraph.types import interrupt
 
 from ssu_agent.llm_factory import create_llm, get_llm_sequence
@@ -151,7 +161,6 @@ def build_library_agent(
 
     Call .compile(checkpointer=...) on the result before use.
     """
-    # llm_seq: single-item list when injected (tests), full sequence otherwise.
     llm_seq = [llm] if llm is not None else get_llm_sequence()
     if not llm_seq:
         llm_seq = [create_llm()]
@@ -164,18 +173,76 @@ def build_library_agent(
 
     # ── Nodes ─────────────────────────────────────────────────────────────────
 
-    async def agent_node(state: SsuAgentState) -> dict:
+    async def agent_node(state: SsuAgentState, config: RunnableConfig) -> dict:
         mcp_session_id = state.get("mcp_session_id")
         prompt = _build_library_prompt(mcp_session_id)
         messages = _drop_routing_messages(state["messages"])
+        input_messages = [SystemMessage(content=prompt), *messages]
+
         last_exc: Exception | None = None
         for _llm in llm_seq:
             try:
-                inner = create_react_agent(_llm, agent_tools, prompt=prompt)
-                result = await inner.ainvoke({"messages": messages})
-                return {"messages": result["messages"]}
+                llm_with_tools = _llm.bind_tools(agent_tools)
+                history = list(input_messages)
+
+                for _ in range(6):
+                    response = await llm_with_tools.ainvoke(history, config=config)
+                    history.append(response)
+
+                    if not response.tool_calls:
+                        break
+
+                    hitl_triggered = False
+                    for tc in response.tool_calls:
+                        matched = next(
+                            (t for t in agent_tools if t.name == tc["name"]), None
+                        )
+                        if matched is None:
+                            history.append(
+                                ToolMessage(
+                                    content=f"Tool '{tc['name']}' not found.",
+                                    tool_call_id=tc.get("id", ""),
+                                )
+                            )
+                            continue
+
+                        try:
+                            result = await matched.ainvoke(
+                                tc.get("args", {}), config=config
+                            )
+                            content = (
+                                result
+                                if isinstance(result, str)
+                                else json.dumps(result, ensure_ascii=False)
+                            )
+                        except Exception as tool_exc:
+                            content = f"Tool error: {tool_exc}"
+
+                        history.append(
+                            ToolMessage(content=content, tool_call_id=tc.get("id", ""))
+                        )
+
+                        # If prepare_* returned an actionId let HITL router take over
+                        if tc["name"] in _PREPARE_TOOL_NAMES:
+                            try:
+                                data = json.loads(content)
+                                if (
+                                    isinstance(data, dict)
+                                    and "data" in data
+                                    and isinstance(data["data"], dict)
+                                    and "actionId" in data["data"]
+                                ):
+                                    hitl_triggered = True
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+
+                    if hitl_triggered:
+                        break
+
+                return {"messages": history[len(input_messages):]}
             except Exception as exc:
                 last_exc = exc
+
         raise last_exc or RuntimeError("All LLM providers exhausted")
 
     async def check_approval_node(state: SsuAgentState) -> dict:
