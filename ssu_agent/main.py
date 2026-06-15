@@ -109,39 +109,44 @@ def _sse(payload: dict) -> str:
 
 async def _stream_graph(input_data: dict | object, config: dict):
     """Yield SSE strings from graph.astream_events."""
-    async for event in _graph.astream_events(input_data, config=config, version="v2"):
-        etype = event.get("event", "")
-        name = event.get("name", "")
+    try:
+        async for event in _graph.astream_events(input_data, config=config, version="v2"):
+            etype = event.get("event", "")
+            name = event.get("name", "")
 
-        if etype == "on_chat_model_stream":
-            chunk = event["data"]["chunk"]
-            content = chunk.content if hasattr(chunk, "content") else str(chunk)
-            if isinstance(content, list):
-                content = "".join(
-                    item["text"] if isinstance(item, dict) and "text" in item else str(item)
-                    for item in content
-                )
-            if content:
-                yield _sse({"type": "text", "content": content})
+            if etype == "on_chat_model_stream":
+                chunk = event["data"]["chunk"]
+                content = chunk.content if hasattr(chunk, "content") else str(chunk)
+                if isinstance(content, list):
+                    content = "".join(
+                        item["text"] if isinstance(item, dict) and "text" in item else str(item)
+                        for item in content
+                    )
+                if content:
+                    yield _sse({"type": "text", "content": content})
 
-        elif etype == "on_tool_start":
-            if name.startswith("transfer_to_"):
-                agent = name.replace("transfer_to_", "").replace("_agent", "")
-                yield _sse(
-                    {
-                        "type": "handoff",
-                        "agent": agent,
-                        "status": "routing",
-                        "message": f"{agent} 에이전트로 전환 중...",
-                    }
-                )
-            else:
-                yield _sse({"type": "tool", "name": name})
+            elif etype == "on_tool_start":
+                if name.startswith("transfer_to_"):
+                    agent = name.replace("transfer_to_", "").replace("_agent", "")
+                    yield _sse(
+                        {
+                            "type": "handoff",
+                            "agent": agent,
+                            "status": "routing",
+                            "message": f"{agent} 에이전트로 전환 중...",
+                        }
+                    )
+                else:
+                    yield _sse({"type": "tool", "name": name})
 
-        elif etype == "on_interrupt":
-            interrupt_data = event.get("data", {})
-            yield _sse({"type": "interrupt", "data": interrupt_data})
-            return  # Pause SSE; client waits for /agent/resume
+            elif etype == "on_interrupt":
+                interrupt_data = event.get("data", {})
+                yield _sse({"type": "interrupt", "data": interrupt_data})
+                return  # Pause SSE; client waits for /agent/resume
+
+    except Exception as exc:
+        yield _sse({"type": "error", "message": str(exc)})
+        return
 
     yield _sse({"type": "done"})
 
