@@ -46,7 +46,8 @@ def _build_lms_prompt(mcp_session_id: str | None) -> str:
         prompt += (
             f'\n\n[인증 세션] mcp_session_id = "{mcp_session_id}"\n'
             "get_my_assignments, get_my_lms_terms, get_lms_dashboard, "
-            "get_my_lms_courses, get_my_lms_materials, prepare_lms_material_export, confirm_lms_material_export "
+            "get_my_lms_courses, get_my_lms_materials, "
+            "prepare_lms_material_export, confirm_lms_material_export "
             "호출 시 이 값을 mcp_session_id 파라미터로 반드시 포함하세요."
         )
     return prompt

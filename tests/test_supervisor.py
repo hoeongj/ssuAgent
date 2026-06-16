@@ -133,7 +133,7 @@ def test_categorise_splits_lms_tools():
     # New LMS export tools must reach LMS agent
     assert "get_my_lms_courses" in lms_names
     assert "get_my_lms_materials" in lms_names
-    assert "prepare_lms_material_export" in lms_names   # THE BUG FIX TEST
+    assert "prepare_lms_material_export" in lms_names  # THE BUG FIX TEST
     assert "confirm_lms_material_export" in lms_names
 
     # Library tools must NOT be mis-routed
