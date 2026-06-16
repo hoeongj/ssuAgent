@@ -100,6 +100,7 @@ _ACADEMIC_NAMES = {
 _LMS_NAMES = {
     "get_my_assignments",
     "get_my_lms_terms",
+    "get_lms_dashboard",
 }
 _AUTH_NAMES = {"start_auth", "get_auth_status", "logout_provider", "logout_all"}
 
@@ -159,7 +160,8 @@ def _make_routing_tools() -> list[BaseTool]:
     def transfer_to_lms_agent(query: str) -> str:
         """Transfer to LMS Agent.
 
-        Use for: assignments, LMS terms, and deadlines.
+        Use for: assignments, LMS terms, deadlines, and LMS dashboard
+        (학사 대시보드 - 과제 마감·시험 일정·공지 통합 조회).
         Provide `query` with the user's specific request.
         """
         return f"{_ROUTE_PREFIX}lms_agent"
@@ -177,7 +179,8 @@ _SUPERVISOR_PROMPT = """당신은 숭실대학교 AI 어시스턴트입니다.
 2. 도서관(library), 학사(academic), LMS 관련 전문 질문은 해당 에이전트로 전달합니다:
    - 도서관 좌석/예약/도서 → transfer_to_library_agent
    - 성적/졸업/장학/학칙 → transfer_to_academic_agent
-   - LMS 과제 → transfer_to_lms_agent
+   - LMS 과제, 마감일, 시험 일정, 공지사항(대시보드)
+     → transfer_to_lms_agent (get_lms_dashboard 사용 가능)
 
 전달 시 사용자의 원래 질문을 query에 그대로 포함하세요.
 이미 하위 에이전트 답변([도서관/학사/LMS 에이전트])이 대화에 있다면

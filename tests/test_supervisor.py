@@ -37,6 +37,12 @@ def get_my_assignments(mcp_session_id: str) -> str:
 
 
 @tool
+def get_lms_dashboard(mcp_session_id: str) -> str:
+    """LMS dashboard"""
+    return '{"dashboard": []}'
+
+
+@tool
 def get_library_available_seats() -> str:
     """도서관 좌석 현황"""
     return '{"floors": []}'
@@ -64,6 +70,7 @@ MOCK_TOOLS = [
     get_today_meal,
     get_my_grades,
     get_my_assignments,
+    get_lms_dashboard,
     get_library_available_seats,
     prepare_reserve_library_seat,
     confirm_action,
@@ -92,6 +99,7 @@ def test_categorise_splits_lms_tools():
     cats = categorise_tools(MOCK_TOOLS)
     lms_names = {t.name for t in cats["lms"]}
     assert "get_my_assignments" in lms_names
+    assert "get_lms_dashboard" in lms_names
 
 
 def test_categorise_public_tools():
