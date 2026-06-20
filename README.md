@@ -20,10 +20,21 @@ ssuMCP Server (Spring Boot 4)
     └── LMS (강의/과제)
 ```
 
-- **멀티 프로바이더 LLM 폴백**: `llm_factory.get_llm_sequence()`가 Gemini → OpenAI → Groq 순으로 폴백(단일 장애점 제거).
+- **멀티 프로바이더 LLM 폴백**: `llm_factory.get_llm_sequence()`가 Groq(llama-3.3-70b, 무료 14,400 req/day) → Gemini → OpenRouter 순으로 폴백(단일 장애점 제거). Groq는 `ChatOpenAI` 래퍼 대신 `ChatGroq`를 쓴다 — 제네릭 래퍼가 assistant content를 list로 직렬화해 2번째 tool call에서 Groq가 400을 내기 때문.
 - **공식 출처 RAG**: `rag/academic_rag.py`의 `AcademicRagEngine`(LlamaIndex `SimpleVectorStore` + RelevancyEvaluator)로 학칙·졸업·장학 답변 근거를 검색·평가한다.
 - **상태 영속화**: LangGraph Postgres checkpointer로 대화 상태를 저장한다.
 - **HITL 안전장치**: 도서관 write action은 `prepare_*` → 사용자 승인 → `confirm_action` 2단계로만 실행된다.
+
+### 주요 구성요소
+
+| 구성요소 | 파일 | 역할 |
+|---|---|---|
+| Supervisor | `supervisor/graph.py` | 질문 분류 → `ROUTE_TO:X` 마커로 도메인 라우팅. LangGraph 1.2.4의 `create_react_agent`가 도구 반환 `Command`를 상위 그래프로 전파하지 않아, 라우팅 도구가 마커 문자열을 반환하고 `post_supervisor` 노드가 스캔해 `Command(goto=X)`를 내는 패턴으로 우회(ADR 0001) |
+| 도메인 에이전트 | `agents/{academic,library,lms}.py` | 도메인별 MCP 도구 묶음 + 수동 `bind_tools` 폴백 루프(프로바이더 장애점 제거) |
+| MCP 클라이언트 | `mcp_client.py` | ssuMCP에 Streamable HTTP(MCP 2025-03-26)로 연결, 도구 동적 로드 |
+| RAG 엔진 | `rag/academic_rag.py` | LlamaIndex `SimpleVectorStore`(인메모리) + OpenAI `text-embedding-3-small`(1536-dim) + `RelevancyEvaluator`. `llm=None`이면 retrieval-only(CI에서 API 키 불필요), `MockEmbedding`으로 테스트 |
+| LLM 팩토리 | `llm_factory.py` | `get_llm_sequence()` — Groq→Gemini→OpenRouter 우선순위 폴백 |
+| 체크포인터 | LangGraph Postgres | 대화 상태(turn 간) 영속 |
 
 ## Why LangGraph?
 
