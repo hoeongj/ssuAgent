@@ -17,11 +17,12 @@ Python LangGraph campus assistant agent connecting to ssuMCP.
 - Lint: `uv run ruff check . && uv run ruff format --check .`
 - Run: set `GOOGLE_API_KEY`, then call `ssu_agent.graph.run_query(...)` from Python.
 
-## Phase Roadmap
+## Phase Roadmap (Phases 1-4 complete)
 
-- Phase 1 (current): single ReAct agent, public ssuMCP tools (meal/library/notice), scaffolding
-- Phase 2: multi-agent sub-graphs per domain, auth tools (library reservation), streaming
-- Phase 3: ssuAI frontend integration (web UI for agent chat)
+- Phase 1 (DONE): single ReAct agent, public ssuMCP tools (meal/library/notice), scaffolding
+- Phase 2 (DONE): supervisor multi-agent sub-graphs per domain (academic/library/lms), auth tools (library reservation HITL), streaming
+- Phase 3 (DONE): ssuAI frontend integration (web UI for agent chat, SSE)
+- Phase 4 (DONE): LlamaIndex official-source RAG (SimpleVectorStore + RelevancyEvaluator)
 
 ## Commit Convention
 
