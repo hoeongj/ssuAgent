@@ -38,15 +38,16 @@ def get_llm_sequence() -> list[BaseChatModel]:
             )
         )
 
-    from langchain_google_genai import ChatGoogleGenerativeAI
+    if config.GOOGLE_API_KEY:
+        from langchain_google_genai import ChatGoogleGenerativeAI
 
-    llms.append(
-        ChatGoogleGenerativeAI(
-            model=config.GEMINI_MODEL,
-            google_api_key=config.GOOGLE_API_KEY,
-            max_retries=1,
+        llms.append(
+            ChatGoogleGenerativeAI(
+                model=config.GEMINI_MODEL,
+                google_api_key=config.GOOGLE_API_KEY,
+                max_retries=1,
+            )
         )
-    )
 
     if config.OPENROUTER_API_KEY:
         from langchain_openai import ChatOpenAI
@@ -65,4 +66,10 @@ def get_llm_sequence() -> list[BaseChatModel]:
 
 def create_llm() -> BaseChatModel:
     """Return the highest-priority available LLM (for static agent builds)."""
-    return get_llm_sequence()[0]
+    sequence = get_llm_sequence()
+    if not sequence:
+        raise RuntimeError(
+            "No LLM provider API key configured "
+            "(set GROQ_API_KEY / GOOGLE_API_KEY / OPENROUTER_API_KEY)"
+        )
+    return sequence[0]

@@ -43,10 +43,11 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -107,10 +108,30 @@ app = FastAPI(title="ssuAgent", version="0.2.0", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=config.ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Auth dependency ─────────────────────────────────────────────────────────────
+
+
+async def verify_agent_key(x_agent_key: str | None = Header(default=None)) -> None:
+    """Opt-in API-key gate for /agent endpoints.
+
+    No-op when config.AGENT_API_KEY is empty (default — prod behavior unchanged).
+    When set, the request must carry an X-Agent-Key header equal to it.
+    config is read live (not bound at import time) so the gate reflects the
+    current env / test overrides. compare_digest guards against timing attacks;
+    the `not x_agent_key` short-circuit avoids a TypeError when the header is
+    missing (compare_digest rejects None).
+    """
+    expected = config.AGENT_API_KEY
+    if not expected:
+        return
+    if not x_agent_key or not secrets.compare_digest(x_agent_key, expected):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Agent-Key")
 
 
 # ── Request / response models ─────────────────────────────────────────────────
@@ -185,7 +206,7 @@ async def _stream_graph(input_data: dict | object, config: dict):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
-@app.post("/agent/stream")
+@app.post("/agent/stream", dependencies=[Depends(verify_agent_key)])
 async def stream_agent(req: AgentRequest):
     """Start or continue a conversation. Streams SSE events."""
     thread_id = req.thread_id or str(uuid.uuid4())
@@ -208,7 +229,7 @@ async def stream_agent(req: AgentRequest):
     )
 
 
-@app.post("/agent/resume")
+@app.post("/agent/resume", dependencies=[Depends(verify_agent_key)])
 async def resume_agent(req: ResumeRequest):
     """Resume a graph paused by a library HITL interrupt.
 
