@@ -20,7 +20,7 @@ ssuMCP Server (Spring Boot 4)
     └── LMS (강의/과제)
 ```
 
-- **멀티 프로바이더 LLM 폴백**: `llm_factory.get_llm_sequence()`가 Groq(llama-3.3-70b, 무료 14,400 req/day) → Gemini → OpenRouter 순으로 폴백(단일 장애점 제거). Groq는 `ChatOpenAI` 래퍼 대신 `ChatGroq`를 쓴다 — 제네릭 래퍼가 assistant content를 list로 직렬화해 2번째 tool call에서 Groq가 400을 내기 때문.
+- **멀티 프로바이더 LLM 폴백**: `llm_factory.get_llm_sequence()`가 Groq(llama-3.3-70b, 무료 14,400 req/day) → Gemini → OpenRouter 순으로 폴백(단일 장애점 제거). 각 프로바이더는 해당 API 키가 설정된 경우에만 시퀀스에 추가된다 — Groq는 `GROQ_API_KEY`, Gemini는 `GOOGLE_API_KEY`, OpenRouter는 `OPENROUTER_API_KEY`. 키가 하나도 없으면 `create_llm()`이 명확한 `RuntimeError`를 던진다(조용한 오작동 방지). Groq는 `ChatOpenAI` 래퍼 대신 `ChatGroq`를 쓴다 — 제네릭 래퍼가 assistant content를 list로 직렬화해 2번째 tool call에서 Groq가 400을 내기 때문.
 - **공식 출처 RAG**: `rag/academic_rag.py`의 `AcademicRagEngine`(LlamaIndex `SimpleVectorStore` + RelevancyEvaluator)로 학칙·졸업·장학 답변 근거를 검색·평가한다.
 - **상태 영속화**: LangGraph Postgres checkpointer로 대화 상태를 저장한다.
 - **HITL 안전장치**: 도서관 write action은 `prepare_*` → 사용자 승인 → `confirm_action` 2단계로만 실행된다.
@@ -53,8 +53,12 @@ uv sync --extra dev
 
 ## Run
 
+최소 하나의 LLM 프로바이더 키가 필요하다(아래 중 하나면 충분, 셋 다 설정하면 폴백 순서대로 사용):
+
 ```bash
-export GOOGLE_API_KEY=<your-gemini-key>
+export GROQ_API_KEY=<your-groq-key>        # 1순위(선택)
+export GOOGLE_API_KEY=<your-gemini-key>    # 2순위(선택)
+export OPENROUTER_API_KEY=<your-or-key>    # 3순위(선택)
 export SSUMCP_URL=https://ssumcp.duckdns.org/mcp  # optional, this is the default
 uv run python -c "
 import asyncio
@@ -62,6 +66,26 @@ from ssu_agent.graph import run_query
 print(asyncio.run(run_query('오늘 학식 알려줘')))
 "
 ```
+
+## Security / configuration
+
+Wave 4 보안 하드닝으로 추가된 환경변수(모두 선택, 기본값은 기존 prod 동작 보존):
+
+| 환경변수 | 기본값 | 역할 |
+|---|---|---|
+| `ALLOWED_ORIGINS` | `*` (전체 허용) | CORS allow-list. 콤마로 구분한 origin 목록(`config.py`에서 파싱 → `main.py` `CORSMiddleware`). 단일 `*`이면 기존처럼 전체 허용. 실제 프론트엔드 origin으로 좁히면 CORS 보호가 활성화된다. |
+| `AGENT_API_KEY` | 비어 있음(게이트 off) | `/agent/*` 엔드포인트의 **opt-in** API 키 게이트(`main.py`의 `verify_agent_key` 의존성). 비어 있으면 no-op(기존 prod 동작 그대로). 설정하면 모든 `/agent` 요청이 일치하는 `X-Agent-Key` 헤더를 보내야 하며(`secrets.compare_digest`로 타이밍 공격 방어), 없거나 틀리면 401. |
+| LLM 키 | — | `GROQ_API_KEY`/`GOOGLE_API_KEY`/`OPENROUTER_API_KEY` 중 설정된 것만 폴백 시퀀스에 포함(위 Architecture 참조). |
+
+### TODO — `/agent` 인증 활성화 (현재 opt-in, 기본 OFF)
+
+> 현재 `/agent` API 키 게이트는 opt-in이며 기본적으로 꺼져 있다. 실제로 활성화하려면 **두 곳을 동시에** 맞춰야 한다:
+> 1. **ssuAgent**: `AGENT_API_KEY` 환경변수 설정(배포 env).
+> 2. **ssuAI**: 같은 값을 `X-Agent-Key` 헤더로 모든 `/agent` 요청에 실어 보내도록 수정.
+>
+> 한쪽만 적용하면(예: ssuAgent에 키만 설정) ssuAI 요청이 전부 401로 깨진다. 둘을 함께 배포해야 한다.
+>
+> 또한 CORS는 현재 기본 `*`(전체 허용)이므로, `ALLOWED_ORIGINS`를 실제 프론트엔드 origin으로 좁혀야 한다. 위 두 작업(인증 헤더 연동 + CORS narrowing)은 후속 작업으로 남아 있다.
 
 ## Test
 
@@ -77,5 +101,6 @@ uv run pytest
 | 2 | 도메인별 supervisor 멀티에이전트, 도서관 예약 인증 도구(HITL), 스트리밍 응답 | ✅ 완료 |
 | 3 | ssuAI 프론트엔드 연동 (웹 UI 채팅, SSE) | ✅ 완료 |
 | 4 | LlamaIndex 공식 출처 RAG + RelevancyEvaluator 평가 | ✅ 완료 |
+| 보안 하드닝 (Wave 4) | LLM 프로바이더 키 가드, env 기반 CORS(`ALLOWED_ORIGINS`), opt-in `/agent` API 키 게이트(`AGENT_API_KEY`) | ✅ 코드 배포 완료 / `/agent` 인증·CORS narrowing은 활성화 후속 작업(위 Security 섹션 TODO) |
 
 > 구현 메모: `create_react_agent`의 루핑 이슈로 도메인 에이전트는 수동 `bind_tools` 폴백 루프로 전환했다(단일 프로바이더 장애점 제거). 근거·대안은 `docs/adr/` 참조.
