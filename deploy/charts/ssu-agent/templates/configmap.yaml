@@ -9,3 +9,4 @@ metadata:
     argocd.argoproj.io/sync-wave: "1"
 data:
   SSUMCP_URL: {{ .Values.env.ssumcpUrl | quote }}
+  ALLOWED_ORIGINS: {{ .Values.env.allowedOrigins | quote }}

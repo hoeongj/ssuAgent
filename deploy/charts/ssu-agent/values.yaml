@@ -8,6 +8,10 @@ nameOverride: ""
 fullnameOverride: ""
 env:
   ssumcpUrl: "https://ssumcp.duckdns.org/mcp"
+  # CORS allow-list for /agent/* (browser calls from the Vercel frontend). Was
+  # unset -> config.py defaulted to "*"; pinned to the prod frontend origin to
+  # match ssuMCP's SSUAI_FRONTEND_ORIGIN. ADR 0009 / S1.
+  allowedOrigins: "https://ssuai.vercel.app"
 secretRef:
   enabled: true
   name: ssuagent-secrets
