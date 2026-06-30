@@ -84,15 +84,15 @@ Wave 4 보안 하드닝으로 추가된 환경변수(모두 선택, 기본값은
 
 배포 전 만들어진 checkpoint에는 owner row가 없으므로, 배포 후 첫 접근자가 owner를 claim한다. `mcp_session_id`는 재로그인 시 바뀌므로 ssuAI는 logout 때 `ssuagent_thread_id`를 지워 self-403을 피해야 한다. 자세한 결정 배경은 `docs/adr/0010-agent-thread-ownership-binding.md`를 참조한다.
 
-### TODO — `/agent` 인증 활성화 (현재 opt-in, 기본 OFF)
+### 완료 — `/agent` 인증 활성화 (prod 적용·검증 완료)
 
-> 현재 `/agent` API 키 게이트는 opt-in이며 기본적으로 꺼져 있다. 실제로 활성화하려면 **두 곳을 동시에** 맞춰야 한다:
-> 1. **ssuAgent**: `AGENT_API_KEY` 환경변수 설정(배포 env).
-> 2. **ssuAI**: 같은 값을 `X-Agent-Key` 헤더로 모든 `/agent` 요청에 실어 보내도록 수정.
+> `/agent` API 키 게이트는 양쪽에 모두 적용되어 prod에서 활성화되었다:
+> 1. **ssuAgent**: `main.py`의 `verify_agent_key` 의존성이 `AGENT_API_KEY`와 일치하는 `X-Agent-Key` 헤더를 강제한다(없거나 틀리면 401). `/agent/stream`·`/agent/resume`에 `Depends(verify_agent_key)`로 걸려 있다.
+> 2. **ssuAI**: 서버 전용 proxy(`lib/server/agentProxy.ts`)가 모든 `/agent` 요청에 `X-Agent-Key`를 주입한다. 브라우저는 same-origin `/api/agent/*`만 호출하므로 키가 클라이언트에 노출되지 않는다(PR #205 `c891ba6`).
 >
-> 한쪽만 적용하면(예: ssuAgent에 키만 설정) ssuAI 요청이 전부 401로 깨진다. 둘을 함께 배포해야 한다.
+> prod 3-way 검증 완료: 키 없이 직접 호출 → 401(인증 차단), 올바른 키로 직접 호출 → 422(인증 통과 후 본문 검증 단계 도달), ssuAI proxy 경유 → 422(proxy가 키 주입 → 인증 통과). 즉 인증 게이트가 실제로 동작함을 확인했다.
 >
-> 또한 CORS는 현재 기본 `*`(전체 허용)이므로, `ALLOWED_ORIGINS`를 실제 프론트엔드 origin으로 좁혀야 한다. 위 두 작업(인증 헤더 연동 + CORS narrowing)은 후속 작업으로 남아 있다.
+> 남은 후속 작업은 CORS narrowing뿐이다 — CORS는 현재 기본 `*`(전체 허용)이므로 `ALLOWED_ORIGINS`를 실제 프론트엔드 origin으로 좁혀야 한다.
 
 ## Test
 
@@ -108,6 +108,6 @@ uv run pytest
 | 2 | 도메인별 supervisor 멀티에이전트, 도서관 예약 인증 도구(HITL), 스트리밍 응답 | ✅ 완료 |
 | 3 | ssuAI 프론트엔드 연동 (웹 UI 채팅, SSE) | ✅ 완료 |
 | 4 | LlamaIndex 공식 출처 RAG + RelevancyEvaluator 평가 | ✅ 완료 |
-| 보안 하드닝 (Wave 4) | LLM 프로바이더 키 가드, env 기반 CORS(`ALLOWED_ORIGINS`), opt-in `/agent` API 키 게이트(`AGENT_API_KEY`), thread ownership binding | ✅ 코드 배포 완료 / `/agent` 인증·CORS narrowing은 활성화 후속 작업(위 Security 섹션 TODO) |
+| 보안 하드닝 (Wave 4) | LLM 프로바이더 키 가드, env 기반 CORS(`ALLOWED_ORIGINS`), `/agent` API 키 게이트(`AGENT_API_KEY`), thread ownership binding | ✅ 완료 / `/agent` 인증·thread ownership binding prod 활성화 완료(PR #205 `c891ba6`) · CORS narrowing만 후속 작업 |
 
 > 구현 메모: `create_react_agent`의 루핑 이슈로 도메인 에이전트는 수동 `bind_tools` 폴백 루프로 전환했다(단일 프로바이더 장애점 제거). 근거·대안은 `docs/adr/` 참조.
