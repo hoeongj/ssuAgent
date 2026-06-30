@@ -1,5 +1,7 @@
 # ssuAgent
 
+[![CI](https://github.com/ghdtjdwn/ssuAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/ghdtjdwn/ssuAgent/actions/workflows/ci.yml)
+
 숭실대학교 MCP 서버([ssuMCP](https://github.com/ghdtjdwn/ssuMCP))에 연결하는 LangGraph 기반 **멀티에이전트** 캠퍼스 AI 에이전트. [ssuAI](https://github.com/ghdtjdwn/ssuAI) 웹 채팅 UI에 SSE 스트리밍으로 연동된다.
 
 ## Architecture
@@ -9,7 +11,7 @@ User Query
     │
     ▼
 Supervisor (LangGraph StateGraph) ── 질문 분류 → 도메인 라우팅
-    ├── academic agent   (학사/성적/졸업/장학 + LlamaIndex RAG)
+    ├── academic agent   (학사/성적/졸업/장학)
     ├── library agent    (좌석 추천·예약, prepare/confirm HITL)
     └── lms agent        (강의/과제/자료 내보내기)
     │  Streamable HTTP (MCP 2025-03-26)
@@ -21,7 +23,7 @@ ssuMCP Server (Spring Boot 4)
 ```
 
 - **멀티 프로바이더 LLM 폴백**: `llm_factory.get_llm_sequence()`가 Groq(llama-3.3-70b, 무료 14,400 req/day) → Gemini → OpenRouter 순으로 폴백(단일 장애점 제거). 각 프로바이더는 해당 API 키가 설정된 경우에만 시퀀스에 추가된다 — Groq는 `GROQ_API_KEY`, Gemini는 `GOOGLE_API_KEY`, OpenRouter는 `OPENROUTER_API_KEY`. 키가 하나도 없으면 `create_llm()`이 명확한 `RuntimeError`를 던진다(조용한 오작동 방지). Groq는 `ChatOpenAI` 래퍼 대신 `ChatGroq`를 쓴다 — 제네릭 래퍼가 assistant content를 list로 직렬화해 2번째 tool call에서 Groq가 400을 내기 때문.
-- **공식 출처 RAG**: `rag/academic_rag.py`의 `AcademicRagEngine`(LlamaIndex `SimpleVectorStore` + RelevancyEvaluator)로 학칙·졸업·장학 답변 근거를 검색·평가한다.
+- **공식 출처 RAG 파이프라인(standalone)**: `rag/academic_rag.py`의 `AcademicRagEngine`은 LlamaIndex `SimpleVectorStore` + `get_response_synthesizer` 기반의 검색·합성 파이프라인으로, 단위 테스트로 검증된다(설계·대안은 ADR 0008). 운영 환경의 학칙·졸업·장학 답변 근거는 ssuMCP 서버측 RAG 도구(`search_academic_policy_sources` 등)가 제공하며, 이 로컬 엔진은 LlamaIndex 기반 자체 RAG 구현을 탐색·검증한 산출물이다.
 - **상태 영속화**: LangGraph Postgres checkpointer로 대화 상태를 저장한다.
 - **대화 소유권 바인딩**: `thread_owners` 테이블로 `thread_id`를 최초 생성한 `mcp_session_id`에 묶어, 다른 세션이 같은 checkpoint를 읽거나 resume하지 못하게 막는다.
 - **HITL 안전장치**: 도서관 write action은 `prepare_*` → 사용자 승인 → `confirm_action` 2단계로만 실행된다.
@@ -33,7 +35,7 @@ ssuMCP Server (Spring Boot 4)
 | Supervisor | `supervisor/graph.py` | 질문 분류 → `ROUTE_TO:X` 마커로 도메인 라우팅. LangGraph 1.2.4의 `create_react_agent`가 도구 반환 `Command`를 상위 그래프로 전파하지 않아, 라우팅 도구가 마커 문자열을 반환하고 `post_supervisor` 노드가 스캔해 `Command(goto=X)`를 내는 패턴으로 우회(ADR 0001) |
 | 도메인 에이전트 | `agents/{academic,library,lms}.py` | 도메인별 MCP 도구 묶음 + 수동 `bind_tools` 폴백 루프(프로바이더 장애점 제거) |
 | MCP 클라이언트 | `mcp_client.py` | ssuMCP에 Streamable HTTP(MCP 2025-03-26)로 연결, 도구 동적 로드 |
-| RAG 엔진 | `rag/academic_rag.py` | LlamaIndex `SimpleVectorStore`(인메모리) + OpenAI `text-embedding-3-small`(1536-dim) + `RelevancyEvaluator`. `llm=None`이면 retrieval-only(CI에서 API 키 불필요), `MockEmbedding`으로 테스트 |
+| RAG 엔진(standalone) | `rag/academic_rag.py` | LlamaIndex `SimpleVectorStore`(인메모리) + OpenAI `text-embedding-3-small`(1536-dim) + `get_response_synthesizer`. `llm=None`이면 retrieval-only(CI에서 API 키 불필요), `MockEmbedding`으로 테스트. 운영 답변 근거는 ssuMCP 서버측 RAG가 담당 |
 | LLM 팩토리 | `llm_factory.py` | `get_llm_sequence()` — Groq→Gemini→OpenRouter 우선순위 폴백 |
 | 체크포인터 | LangGraph Postgres | 대화 상태(turn 간) 영속 |
 
@@ -61,11 +63,13 @@ export GROQ_API_KEY=<your-groq-key>        # 1순위(선택)
 export GOOGLE_API_KEY=<your-gemini-key>    # 2순위(선택)
 export OPENROUTER_API_KEY=<your-or-key>    # 3순위(선택)
 export SSUMCP_URL=https://ssumcp.duckdns.org/mcp  # optional, this is the default
-uv run python -c "
-import asyncio
-from ssu_agent.graph import run_query
-print(asyncio.run(run_query('오늘 학식 알려줘')))
-"
+# FastAPI 앱 실행 (SSE 스트리밍 엔드포인트)
+uv run uvicorn ssu_agent.main:app --host 0.0.0.0 --port 8000
+
+# 다른 터미널에서 호출 (AGENT_API_KEY를 설정했다면 -H "X-Agent-Key: <key>" 추가)
+curl -N -X POST http://localhost:8000/agent/stream \
+  -H "Content-Type: application/json" \
+  -d '{"message": "오늘 학식 알려줘"}'
 ```
 
 ## Security / configuration
@@ -84,15 +88,9 @@ Wave 4 보안 하드닝으로 추가된 환경변수(모두 선택, 기본값은
 
 배포 전 만들어진 checkpoint에는 owner row가 없으므로, 배포 후 첫 접근자가 owner를 claim한다. `mcp_session_id`는 재로그인 시 바뀌므로 ssuAI는 logout 때 `ssuagent_thread_id`를 지워 self-403을 피해야 한다. 자세한 결정 배경은 `docs/adr/0010-agent-thread-ownership-binding.md`를 참조한다.
 
-### 완료 — `/agent` 인증 활성화 (prod 적용·검증 완료)
+### `/agent` 엔드포인트 인증
 
-> `/agent` API 키 게이트는 양쪽에 모두 적용되어 prod에서 활성화되었다:
-> 1. **ssuAgent**: `main.py`의 `verify_agent_key` 의존성이 `AGENT_API_KEY`와 일치하는 `X-Agent-Key` 헤더를 강제한다(없거나 틀리면 401). `/agent/stream`·`/agent/resume`에 `Depends(verify_agent_key)`로 걸려 있다.
-> 2. **ssuAI**: 서버 전용 proxy(`lib/server/agentProxy.ts`)가 모든 `/agent` 요청에 `X-Agent-Key`를 주입한다. 브라우저는 same-origin `/api/agent/*`만 호출하므로 키가 클라이언트에 노출되지 않는다(PR #205 `c891ba6`).
->
-> prod 3-way 검증 완료: 키 없이 직접 호출 → 401(인증 차단), 올바른 키로 직접 호출 → 422(인증 통과 후 본문 검증 단계 도달), ssuAI proxy 경유 → 422(proxy가 키 주입 → 인증 통과). 즉 인증 게이트가 실제로 동작함을 확인했다.
->
-> CORS narrowing도 prod에서 완료됐다 — 코드 기본값은 `*`이지만 prod 차트 configmap이 `ALLOWED_ORIGINS`를 Vercel 프론트엔드 origin(`https://ssuai.vercel.app`)으로 고정한다(`b4fae95`). 따라서 남은 후속 작업은 없다.
+`/agent/*`는 API 키 게이트로 보호된다. ssuAgent가 `AGENT_API_KEY`와 일치하는 `X-Agent-Key` 헤더를 강제하고(`main.py`의 `verify_agent_key`, 불일치 시 401), ssuAI 프론트엔드는 서버 전용 proxy(`lib/server/agentProxy.ts`)에서 키를 주입한다 — 브라우저는 same-origin `/api/agent/*`만 호출하므로 키가 클라이언트에 노출되지 않는다. CORS는 `ALLOWED_ORIGINS`로 프론트엔드 origin에 한정한다. 설계 배경과 검증 절차는 `docs/adr/0009-agent-edge-hardening.md`를 참조한다.
 
 ## Test
 
@@ -107,7 +105,7 @@ uv run pytest
 | 1 | ReAct 단일 에이전트, 공개 도구 3종 (식단/도서관/공지) | ✅ 완료 |
 | 2 | 도메인별 supervisor 멀티에이전트, 도서관 예약 인증 도구(HITL), 스트리밍 응답 | ✅ 완료 |
 | 3 | ssuAI 프론트엔드 연동 (웹 UI 채팅, SSE) | ✅ 완료 |
-| 4 | LlamaIndex 공식 출처 RAG + RelevancyEvaluator 평가 | ✅ 완료 |
-| 보안 하드닝 (Wave 4) | LLM 프로바이더 키 가드, env 기반 CORS(`ALLOWED_ORIGINS`), `/agent` API 키 게이트(`AGENT_API_KEY`), thread ownership binding | ✅ 완료 / `/agent` 인증·thread ownership binding prod 활성화(PR #205 `c891ba6`) · CORS narrowing prod 적용(`b4fae95`) |
+| 4 | LlamaIndex 기반 공식 출처 RAG 검색 파이프라인(standalone, 단위 테스트 검증) | ✅ 완료 |
+| 보안 하드닝 | LLM 프로바이더 키 가드, env 기반 CORS(`ALLOWED_ORIGINS`), `/agent` API 키 게이트(`AGENT_API_KEY`), thread ownership binding | ✅ 완료 |
 
 > 구현 메모: `create_react_agent`의 루핑 이슈로 도메인 에이전트는 수동 `bind_tools` 폴백 루프로 전환했다(단일 프로바이더 장애점 제거). 근거·대안은 `docs/adr/` 참조.

@@ -1,7 +1,7 @@
 """
 Tests for the Academic sub-agent.
 
-Academic agent uses create_react_agent — tests verify graph builds and tags responses.
+Academic agent uses a manual bind_tools loop — tests verify graph builds and tags responses.
 """
 
 from __future__ import annotations

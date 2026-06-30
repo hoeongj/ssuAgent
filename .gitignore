@@ -6,3 +6,10 @@ __pycache__/
 .pytest_cache/
 dist/
 *.egg-info/
+
+# AI-assistant local config (not part of the project)
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.claude/
+.codex/

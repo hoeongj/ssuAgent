@@ -2,7 +2,7 @@
 Tests for the supervisor graph — routing, state, and tool categorisation.
 
 Design: All tests use mock LLM and mock MCP tools so no real network call is made.
-SQLite checkpointer uses in-memory ":memory:" DB for isolation.
+MemorySaver provides in-memory checkpoint isolation.
 """
 
 from __future__ import annotations

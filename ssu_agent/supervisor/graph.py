@@ -38,7 +38,7 @@ Parent-Child State design:
   pending_action is set by Library HITL node and cleared by execute_confirm.
 
 MCP session lifecycle:
-  thread_id (LangGraph SQLite checkpoint key) maps 1:1 with a FastAPI client
+  thread_id (LangGraph checkpoint key) maps 1:1 with a FastAPI client
   connection. mcp_session_id (ssuMCP private tool auth) is passed in the initial
   request body and stored in SsuAgentState. Sub-agents receive it via state and
   include it in private tool calls as instructed by their system prompts.
@@ -233,18 +233,18 @@ async def build_supervisor_graph(
     Args:
         all_tools: MCP tool list. Fetched from ssuMCP if None.
         llm: Override LLM (used in tests).
-        checkpointer: LangGraph checkpointer. Caller is responsible for its
-            lifecycle (SqliteSaver must be kept inside a `with` block in prod).
+        checkpointer: LangGraph checkpointer. Caller owns its lifecycle. In prod
+            an AsyncPostgresSaver (langgraph-checkpoint-postgres) is opened in the
+            FastAPI lifespan and passed in (see main.py / ADR 003).
             If None, uses MemorySaver (no persistence — development only).
 
     Returns:
         Compiled StateGraph with the provided checkpointer.
 
     Checkpointer lifecycle note (important for HITL):
-        SqliteSaver.from_conn_string() returns a context manager. In FastAPI
-        production use, open it in the lifespan handler and pass the active
-        saver here. If the connection closes, HITL resume will fail because
-        the checkpoint can't be read.
+        The prod AsyncPostgresSaver is backed by a connection pool opened in the
+        lifespan handler and kept alive for the app's lifetime. If the pool
+        closes, HITL resume fails because the checkpoint can't be read.
     """
     from ssu_agent.mcp_client import create_mcp_client
 
