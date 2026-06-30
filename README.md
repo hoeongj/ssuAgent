@@ -92,7 +92,7 @@ Wave 4 보안 하드닝으로 추가된 환경변수(모두 선택, 기본값은
 >
 > prod 3-way 검증 완료: 키 없이 직접 호출 → 401(인증 차단), 올바른 키로 직접 호출 → 422(인증 통과 후 본문 검증 단계 도달), ssuAI proxy 경유 → 422(proxy가 키 주입 → 인증 통과). 즉 인증 게이트가 실제로 동작함을 확인했다.
 >
-> 남은 후속 작업은 CORS narrowing뿐이다 — CORS는 현재 기본 `*`(전체 허용)이므로 `ALLOWED_ORIGINS`를 실제 프론트엔드 origin으로 좁혀야 한다.
+> CORS narrowing도 prod에서 완료됐다 — 코드 기본값은 `*`이지만 prod 차트 configmap이 `ALLOWED_ORIGINS`를 Vercel 프론트엔드 origin(`https://ssuai.vercel.app`)으로 고정한다(`b4fae95`). 따라서 남은 후속 작업은 없다.
 
 ## Test
 
@@ -108,6 +108,6 @@ uv run pytest
 | 2 | 도메인별 supervisor 멀티에이전트, 도서관 예약 인증 도구(HITL), 스트리밍 응답 | ✅ 완료 |
 | 3 | ssuAI 프론트엔드 연동 (웹 UI 채팅, SSE) | ✅ 완료 |
 | 4 | LlamaIndex 공식 출처 RAG + RelevancyEvaluator 평가 | ✅ 완료 |
-| 보안 하드닝 (Wave 4) | LLM 프로바이더 키 가드, env 기반 CORS(`ALLOWED_ORIGINS`), `/agent` API 키 게이트(`AGENT_API_KEY`), thread ownership binding | ✅ 완료 / `/agent` 인증·thread ownership binding prod 활성화 완료(PR #205 `c891ba6`) · CORS narrowing만 후속 작업 |
+| 보안 하드닝 (Wave 4) | LLM 프로바이더 키 가드, env 기반 CORS(`ALLOWED_ORIGINS`), `/agent` API 키 게이트(`AGENT_API_KEY`), thread ownership binding | ✅ 완료 / `/agent` 인증·thread ownership binding prod 활성화(PR #205 `c891ba6`) · CORS narrowing prod 적용(`b4fae95`) |
 
 > 구현 메모: `create_react_agent`의 루핑 이슈로 도메인 에이전트는 수동 `bind_tools` 폴백 루프로 전환했다(단일 프로바이더 장애점 제거). 근거·대안은 `docs/adr/` 참조.
