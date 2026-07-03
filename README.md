@@ -23,7 +23,6 @@ ssuMCP Server (Spring Boot 4)
 ```
 
 - **멀티 프로바이더 LLM 폴백**: `llm_factory.get_llm_sequence()`가 Groq(llama-3.3-70b, 무료 14,400 req/day) → Gemini → OpenRouter 순으로 폴백(단일 장애점 제거). 각 프로바이더는 해당 API 키가 설정된 경우에만 시퀀스에 추가된다 — Groq는 `GROQ_API_KEY`, Gemini는 `GOOGLE_API_KEY`, OpenRouter는 `OPENROUTER_API_KEY`. 키가 하나도 없으면 `create_llm()`이 명확한 `RuntimeError`를 던진다(조용한 오작동 방지). Groq는 `ChatOpenAI` 래퍼 대신 `ChatGroq`를 쓴다 — 제네릭 래퍼가 assistant content를 list로 직렬화해 2번째 tool call에서 Groq가 400을 내기 때문.
-- **공식 출처 RAG 파이프라인(standalone)**: `rag/academic_rag.py`의 `AcademicRagEngine`은 LlamaIndex `SimpleVectorStore` + `get_response_synthesizer` 기반의 검색·합성 파이프라인으로, 단위 테스트로 검증된다(설계·대안은 ADR 0008). 운영 환경의 학칙·졸업·장학 답변 근거는 ssuMCP 서버측 RAG 도구(`search_academic_policy_sources` 등)가 제공하며, 이 로컬 엔진은 LlamaIndex 기반 자체 RAG 구현을 탐색·검증한 산출물이다.
 - **상태 영속화**: LangGraph Postgres checkpointer로 대화 상태를 저장한다.
 - **대화 소유권 바인딩**: `thread_owners` 테이블로 `thread_id`를 최초 생성한 `mcp_session_id`에 묶어, 다른 세션이 같은 checkpoint를 읽거나 resume하지 못하게 막는다.
 - **HITL 안전장치**: 도서관 write action은 `prepare_*` → 사용자 승인 → `confirm_action` 2단계로만 실행된다.
@@ -35,7 +34,6 @@ ssuMCP Server (Spring Boot 4)
 | Supervisor | `supervisor/graph.py` | 질문 분류 → `ROUTE_TO:X` 마커로 도메인 라우팅. LangGraph 1.2.4의 `create_react_agent`가 도구 반환 `Command`를 상위 그래프로 전파하지 않아, 라우팅 도구가 마커 문자열을 반환하고 `post_supervisor` 노드가 스캔해 `Command(goto=X)`를 내는 패턴으로 우회(ADR 0001) |
 | 도메인 에이전트 | `agents/{academic,library,lms}.py` | 도메인별 MCP 도구 묶음 + 수동 `bind_tools` 폴백 루프(프로바이더 장애점 제거) |
 | MCP 클라이언트 | `mcp_client.py` | ssuMCP에 Streamable HTTP(MCP 2025-03-26)로 연결, 도구 동적 로드 |
-| RAG 엔진(standalone) | `rag/academic_rag.py` | LlamaIndex `SimpleVectorStore`(인메모리) + OpenAI `text-embedding-3-small`(1536-dim) + `get_response_synthesizer`. `llm=None`이면 retrieval-only(CI에서 API 키 불필요), `MockEmbedding`으로 테스트. 운영 답변 근거는 ssuMCP 서버측 RAG가 담당 |
 | LLM 팩토리 | `llm_factory.py` | `get_llm_sequence()` — Groq→Gemini→OpenRouter 우선순위 폴백 |
 | 체크포인터 | LangGraph Postgres | 대화 상태(turn 간) 영속 |
 
@@ -82,7 +80,6 @@ curl -N -X POST http://localhost:8000/agent/stream \
 | `AGENT_API_KEY` | 비어 있음(게이트 off) | `/agent/*` 엔드포인트의 **opt-in** API 키 게이트(`main.py`의 `verify_agent_key` 의존성). 비어 있으면 no-op(기존 prod 동작 그대로). 설정하면 모든 `/agent` 요청이 일치하는 `X-Agent-Key` 헤더를 보내야 하며(`secrets.compare_digest`로 타이밍 공격 방어), 없거나 틀리면 401. |
 | `AGENT_RATE_LIMIT` | `30/minute` | `/agent/stream`·`/agent/resume`의 per-IP 인바운드 rate limit(slowapi 문법, `main.py`의 `limiter`). 키는 X-Forwarded-For 좌측 홉(ingress 뒤 실클라이언트 IP). 초과 시 429. 배경은 ADR 0009. |
 | `AGENT_MAX_MESSAGE_CHARS` | `8000` | 단일 요청 `message`의 최대 문자 수(pydantic `Field(max_length=…)`). 초과 시 422(oversized-payload 가드, ADR 0009). |
-| `SSUAGENT_LOCAL_RAG` | `false` (off) | **opt-in** 로컬 학칙 RAG 도구. `1`/`true`/`yes`(대소문자 무관)면 academic 에이전트에 `search_local_academic_rag`(LlamaIndex, 번들 fixture 코퍼스) 보조 검색 도구가 추가된다(`ssu_agent/rag/tool.py`). 의미 있는 검색엔 `OPENAI_API_KEY` 필요 — 없으면 MockEmbedding(랜덤 벡터)으로 데모 전용. 기본 off: 공식·권위 근거는 ssuMCP 서버측 RAG(`search_academic_policy_sources`)가 담당하므로 답변 소스 이원화를 피한다(ADR 0008). |
 | LLM 키 | — | `GROQ_API_KEY`/`GOOGLE_API_KEY`/`OPENROUTER_API_KEY` 중 설정된 것만 폴백 시퀀스에 포함(위 Architecture 참조). |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini 프로바이더가 사용할 모델명(`llm_factory.py`, `GOOGLE_API_KEY` 설정 시에만 사용). |
 
@@ -109,7 +106,6 @@ uv run pytest
 | 1 | ReAct 단일 에이전트, 공개 도구 3종 (식단/도서관/공지) | ✅ 완료 |
 | 2 | 도메인별 supervisor 멀티에이전트, 도서관 예약 인증 도구(HITL), 스트리밍 응답 | ✅ 완료 |
 | 3 | ssuAI 프론트엔드 연동 (웹 UI 채팅, SSE) | ✅ 완료 |
-| 4 | LlamaIndex 기반 공식 출처 RAG 검색 파이프라인(standalone, 단위 테스트 검증) | ✅ 완료 |
 | 보안 하드닝 | LLM 프로바이더 키 가드, env 기반 CORS(`ALLOWED_ORIGINS`), `/agent` API 키 게이트(`AGENT_API_KEY`), thread ownership binding | ✅ 완료 |
 
 > 구현 메모: `create_react_agent`의 루핑 이슈로 도메인 에이전트는 수동 `bind_tools` 폴백 루프로 전환했다(단일 프로바이더 장애점 제거). 근거·대안은 `docs/adr/` 참조.

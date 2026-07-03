@@ -64,7 +64,6 @@ from ssu_agent.agents.academic import build_academic_agent
 from ssu_agent.agents.library import build_library_agent
 from ssu_agent.agents.lms import build_lms_agent
 from ssu_agent.llm_factory import get_llm_sequence
-from ssu_agent.rag.tool import build_local_rag_tools
 from ssu_agent.supervisor.state import SsuAgentState
 
 # ── Tool-name categorisation ──────────────────────────────────────────────────
@@ -278,7 +277,7 @@ async def build_supervisor_graph(
     # Sub-agent subgraphs — embedded as nodes so interrupt() propagates correctly
     library_subgraph = build_library_agent([*cats["library"], *cats["auth"]], llm).compile()
     academic_subgraph = build_academic_agent(
-        [*cats["academic"], *cats["auth"], *build_local_rag_tools()], llm
+        [*cats["academic"], *cats["auth"]], llm
     ).compile()
     lms_subgraph = build_lms_agent([*cats["lms"], *cats["auth"]], llm).compile()
 

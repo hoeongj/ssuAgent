@@ -33,13 +33,3 @@ AGENT_RATE_LIMIT: str = os.getenv("AGENT_RATE_LIMIT", "30/minute").strip()
 
 # Max characters accepted in a single agent message (oversized-payload guard).
 AGENT_MAX_MESSAGE_CHARS: int = int(os.getenv("AGENT_MAX_MESSAGE_CHARS", "8000"))
-
-# Optional local academic RAG (LlamaIndex over a bundled fixture corpus), exposed to
-# the academic agent as a supplementary tool. OFF by default: production policy answers
-# come from ssuMCP's server-side RAG (search_academic_policy_sources), and enabling this
-# adds a second answer source. See ssu_agent/rag/tool.py and ADR 0008.
-LOCAL_RAG_ENABLED: bool = os.getenv("SSUAGENT_LOCAL_RAG", "false").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
