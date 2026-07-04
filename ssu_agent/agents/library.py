@@ -54,6 +54,7 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
 from langgraph.types import interrupt
 
+from ssu_agent.agents.react_loop import drop_routing_messages
 from ssu_agent.llm_factory import create_llm, get_llm_sequence
 from ssu_agent.supervisor.state import SsuAgentState
 
@@ -92,45 +93,21 @@ def _build_library_prompt(mcp_session_id: str | None) -> str:
     return prompt
 
 
-def _drop_routing_messages(messages: list) -> list:
-    """Remove supervisor transfer_to_* tool calls and their ToolMessage results.
-
-    When the supervisor routes to library_agent it leaves an AIMessage with a
-    transfer_to_library_agent tool call + a ToolMessage("ROUTE_TO:library_agent")
-    in the shared state. Groq llama-3.3-70b sees the trailing ToolMessage and
-    produces a text completion instead of calling library tools. Strip those
-    routing artifacts so the inner ReAct agent sees a clean user→ conversation.
-    """
-    routing_call_ids: set[str] = set()
-    for msg in messages:
-        if (
-            isinstance(msg, AIMessage)
-            and msg.tool_calls
-            and all(tc.get("name", "").startswith("transfer_to_") for tc in msg.tool_calls)
-        ):
-            for tc in msg.tool_calls:
-                routing_call_ids.add(tc.get("id", ""))
-
-    result = []
-    for msg in messages:
-        if (
-            isinstance(msg, AIMessage)
-            and msg.tool_calls
-            and all(tc.get("name", "").startswith("transfer_to_") for tc in msg.tool_calls)
-        ):
-            continue
-        if isinstance(msg, ToolMessage) and msg.tool_call_id in routing_call_ids:
-            continue
-        result.append(msg)
-    return result
-
-
 _CONFIRM_TOOL_NAMES = {"confirm_action"}
 _PREPARE_TOOL_NAMES = {
     "prepare_reserve_library_seat",
     "prepare_swap_library_seat",
     "prepare_cancel_library_seat",
 }
+
+
+def inner_react_tools(library_tools: list[BaseTool]) -> list[BaseTool]:
+    """Tools the inner ReAct loop is allowed to call — everything EXCEPT
+    confirm_action, which is run only by the HITL gate node after the human
+    approves. Extracted as a pure function so the approval-gate invariant
+    (the model can never call confirm_action itself) is directly unit-testable.
+    """
+    return [t for t in library_tools if t.name not in _CONFIRM_TOOL_NAMES]
 
 
 def _extract_action_id(messages: list) -> dict | None:
@@ -166,7 +143,7 @@ def build_library_agent(
         llm_seq = [create_llm()]
 
     # Strip confirm_action — handled by HITL gate node
-    agent_tools = [t for t in library_tools if t.name not in _CONFIRM_TOOL_NAMES]
+    agent_tools = inner_react_tools(library_tools)
     confirm_tool: BaseTool | None = next(
         (t for t in library_tools if t.name == "confirm_action"), None
     )
@@ -176,7 +153,7 @@ def build_library_agent(
     async def agent_node(state: SsuAgentState, config: RunnableConfig) -> dict:
         mcp_session_id = state.get("mcp_session_id")
         prompt = _build_library_prompt(mcp_session_id)
-        messages = _drop_routing_messages(state["messages"])
+        messages = drop_routing_messages(state["messages"])
         input_messages = [SystemMessage(content=prompt), *messages]
 
         last_exc: Exception | None = None

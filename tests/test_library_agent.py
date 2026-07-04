@@ -16,7 +16,11 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from ssu_agent.agents.library import _extract_action_id, build_library_agent
+from ssu_agent.agents.library import (
+    _extract_action_id,
+    build_library_agent,
+    inner_react_tools,
+)
 from ssu_agent.supervisor.state import SsuAgentState
 
 # ── Mock tools ────────────────────────────────────────────────────────────────
@@ -112,10 +116,21 @@ def _make_library_llm() -> _MockLibraryLLM:
 
 
 def test_library_agent_excludes_confirm_action():
-    """Library agent graph should strip confirm_action from the inner ReAct agent."""
+    """The inner ReAct loop must NOT be able to call confirm_action — it is run
+    only by the HITL gate after human approval. Assert the actual tool split."""
+    inner_names = {t.name for t in inner_react_tools(LIBRARY_TOOLS)}
+
+    # confirm_action is present in the full tool set but withheld from the model.
+    assert "confirm_action" in {t.name for t in LIBRARY_TOOLS}
+    assert "confirm_action" not in inner_names
+    # Read/prepare tools that the model IS allowed to call survive the split.
+    assert "prepare_reserve_library_seat" in inner_names
+    assert "get_library_available_seats" in inner_names
+
+
+def test_library_agent_graph_compiles():
     graph = build_library_agent(LIBRARY_TOOLS, llm=_make_library_llm())
-    compiled = graph.compile()
-    assert compiled is not None
+    assert graph.compile() is not None
 
 
 # ── Integration: HITL interrupt triggers on prepare result ────────────────────

@@ -11,15 +11,12 @@ chapel attendance, scholarships, and ssuMCP's embedded academic policy RAG
 
 from __future__ import annotations
 
-import json
-
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph
 
-from ssu_agent.agents.library import _drop_routing_messages
+from ssu_agent.agents.react_loop import run_react_loop
 from ssu_agent.llm_factory import create_llm, get_llm_sequence
 from ssu_agent.supervisor.state import SsuAgentState
 
@@ -60,63 +57,10 @@ def build_academic_agent(
         llm_seq = [create_llm()]
 
     async def agent_node(state: SsuAgentState, config: RunnableConfig) -> dict:
-        mcp_session_id = state.get("mcp_session_id")
-        prompt = _build_academic_prompt(mcp_session_id)
-        messages = _drop_routing_messages(state["messages"])
-        input_messages = [SystemMessage(content=prompt), *messages]
-
-        last_exc: Exception | None = None
-        for _llm in llm_seq:
-            try:
-                llm_with_tools = _llm.bind_tools(academic_tools)
-                history = list(input_messages)
-
-                for _ in range(6):
-                    response = await llm_with_tools.ainvoke(history, config=config)
-                    history.append(response)
-
-                    if not response.tool_calls:
-                        break
-
-                    for tc in response.tool_calls:
-                        matched = next((t for t in academic_tools if t.name == tc["name"]), None)
-                        if matched is None:
-                            history.append(
-                                ToolMessage(
-                                    content=f"Tool '{tc['name']}' not found.",
-                                    tool_call_id=tc.get("id", ""),
-                                )
-                            )
-                            continue
-                        try:
-                            result = await matched.ainvoke(tc.get("args", {}), config=config)
-                            content = (
-                                result
-                                if isinstance(result, str)
-                                else json.dumps(result, ensure_ascii=False)
-                            )
-                        except Exception as tool_exc:
-                            content = f"Tool error: {tool_exc}"
-                        history.append(ToolMessage(content=content, tool_call_id=tc.get("id", "")))
-
-                last_ai = next(
-                    (
-                        m
-                        for m in reversed(history[len(input_messages) :])
-                        if isinstance(m, AIMessage) and m.content
-                    ),
-                    None,
-                )
-                tagged = AIMessage(
-                    content=f"[학사 에이전트] {last_ai.content}"
-                    if last_ai
-                    else "[학사 에이전트] 처리 완료"
-                )
-                return {"messages": [tagged], "active_agent": None}
-            except Exception as exc:
-                last_exc = exc
-
-        raise last_exc or RuntimeError("All LLM providers exhausted")
+        prompt = _build_academic_prompt(state.get("mcp_session_id"))
+        return await run_react_loop(
+            llm_seq, academic_tools, prompt, "학사 에이전트", state, config
+        )
 
     graph = StateGraph(SsuAgentState)
     graph.add_node("agent", agent_node)

@@ -262,12 +262,19 @@ async def build_supervisor_graph(
     # Supervisor: public tools (meal/notice/campus) + auth + lightweight routing tools
     supervisor_tools = [*cats["public"], *cats["auth"], *routing_tools]
     llm_seq = [llm] if llm is not None else get_llm_sequence()
+    # Build one ReAct agent per provider ONCE. The tools and prompt are static for
+    # the graph's lifetime, so constructing create_react_agent inside the node
+    # re-compiled the identical graph on every request (and again per provider in
+    # the fallback loop). Pre-building keeps the same fallback order.
+    supervisor_reacts = [
+        create_react_agent(_llm, supervisor_tools, prompt=_SUPERVISOR_PROMPT)
+        for _llm in llm_seq
+    ]
 
     async def supervisor_node(state: SsuAgentState, config: RunnableConfig) -> dict:
         last_exc: Exception | None = None
-        for _llm in llm_seq:
+        for react in supervisor_reacts:
             try:
-                react = create_react_agent(_llm, supervisor_tools, prompt=_SUPERVISOR_PROMPT)
                 result = await react.ainvoke({"messages": state["messages"]}, config=config)
                 return {"messages": result["messages"]}
             except Exception as exc:
