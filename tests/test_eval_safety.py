@@ -1,156 +1,160 @@
 """
 EPIC 6 — Safety Eval
 
-Verifies that the agent system does not leak sensitive data:
-1. mcp_session_id never appears in a final AI answer.
-2. Mock tool responses (used throughout the test suite) contain no password/token
-   literals that could be inadvertently exposed.
-3. A ToolMessage carrying an mcp_session_id as part of intermediate state is NOT
-   echoed into the final human-facing response.
+The user-facing safety boundary is `main._stream_graph`: it consumes the graph's
+`astream_events` stream and forwards ONLY a whitelist of event types to the SSE
+client — `on_chat_model_stream` text, `transfer_to_*` handoff labels, generic
+tool labels, and interrupt payloads. Raw state (`on_chain_end`), tool arguments,
+and tool outputs are never forwarded. That whitelist is what keeps the
+`mcp_session_id` (which lives in graph state and in private-tool call args) from
+reaching the browser.
 
-All tests are unit-level (no LLM calls).
+These tests drive the REAL `_stream_graph` with a fake graph whose events embed
+the session id in every non-whitelisted place (tool-call args, tool output, raw
+chain state). We assert the session id never appears in the SSE output, while the
+model's answer text does. If someone adds a branch that forwards raw state or
+tool args, the secret leaks into the stream and these tests fail.
+
+(`test_main_security.py` monkeypatches `_stream_graph` away to test the HTTP
+gate; the actual event-filter logic is only exercised here.)
 """
 
 from __future__ import annotations
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessageChunk
 
-from ssu_agent.supervisor.state import SsuAgentState
+from ssu_agent import main
 
-# ── Sensitive-data constants used in tests ────────────────────────────────────
+# ── Sensitive constants the fake graph tries to leak ──────────────────────────
 
 _SECRET_SESSION = "secret-session-abc123"
-_SECRET_PASSWORD_LITERALS = ["password", "비밀번호", "passwd", "pwd"]
-_SECRET_TOKEN_LITERALS = ["pyxis_token", "pyxis-auth-token", "bearer "]
+_ANSWER = "B-007 좌석 예약이 완료되었습니다."
 
 
-# ── Helper ────────────────────────────────────────────────────────────────────
+class _FakeGraph:
+    """Stand-in for the compiled supervisor graph. Its event stream deliberately
+    carries `_SECRET_SESSION` in every place `_stream_graph` must NOT forward:
+    tool-call args, tool output, and raw chain/state output."""
+
+    def __init__(self, events: list[dict]):
+        self._events = events
+
+    async def astream_events(self, input_data, config, version):  # noqa: ARG002
+        for event in self._events:
+            yield event
 
 
-def _final_ai_content(state: SsuAgentState) -> str:
-    """Return the content of the last AIMessage in state (the final answer)."""
-    for msg in reversed(state["messages"]):
-        if isinstance(msg, AIMessage):
-            content = msg.content
-            return content if isinstance(content, str) else str(content)
-    return ""
+def _leaky_events() -> list[dict]:
+    return [
+        # Raw supervisor state — carries the session id. NOT whitelisted → dropped.
+        {
+            "event": "on_chain_start",
+            "name": "supervisor",
+            "data": {"input": {"mcp_session_id": _SECRET_SESSION}},
+        },
+        # Private tool invoked with the session id in its args. Only name+label
+        # are forwarded on on_tool_start; the args are not.
+        {
+            "event": "on_tool_start",
+            "name": "get_my_grades",
+            "data": {"input": {"mcp_session_id": _SECRET_SESSION}},
+        },
+        # A handoff — only the derived agent name is forwarded.
+        {
+            "event": "on_tool_start",
+            "name": "transfer_to_library_agent",
+            "data": {"input": {"query": "예약"}},
+        },
+        # Tool output echoing the session id. NOT whitelisted → dropped.
+        {
+            "event": "on_tool_end",
+            "name": "get_my_grades",
+            "data": {"output": f'{{"mcp_session_id": "{_SECRET_SESSION}", "grades": []}}'},
+        },
+        # The user-facing answer — this IS forwarded.
+        {
+            "event": "on_chat_model_stream",
+            "name": "supervisor",
+            "data": {"chunk": AIMessageChunk(content=_ANSWER)},
+        },
+        # Final raw state, session id present. NOT whitelisted → dropped.
+        {
+            "event": "on_chain_end",
+            "name": "supervisor",
+            "data": {"output": {"mcp_session_id": _SECRET_SESSION, "messages": []}},
+        },
+    ]
 
 
-# ── Eval 1: mcp_session_id not in final AI answer ─────────────────────────────
-
-
-def test_session_id_not_in_final_answer() -> None:
-    """
-    The mcp_session_id stored in state must not appear verbatim in the
-    final AI-authored response message.
-
-    Scenario: graph produces a ToolMessage containing the session_id as a
-    parameter echo (intermediate state), followed by a final AIMessage
-    summarising results.  The final answer should not contain the session_id.
-    """
-    state: SsuAgentState = {
-        "messages": [
-            HumanMessage(content="도서관 좌석 예약해줘"),
-            # Intermediate: tool call recorded mcp_session_id in its echo
-            ToolMessage(
-                content=f'{{"mcp_session_id": "{_SECRET_SESSION}", "seat_id": 42}}',
-                tool_call_id="tc-internal",
-            ),
-            # Final: AI summarises the outcome for the user
-            AIMessage(content="A-042 좌석 예약이 완료되었습니다."),
-        ],
-        "mcp_session_id": _SECRET_SESSION,
-        "active_agent": "library_agent",
-    }
-
-    final = _final_ai_content(state)
-    assert _SECRET_SESSION not in final, (
-        f"mcp_session_id '{_SECRET_SESSION}' must not appear in the final answer: {final!r}"
+async def _collect() -> str:
+    """Run the real _stream_graph over the installed fake graph, join SSE output."""
+    return "".join(
+        [sse async for sse in main._stream_graph({}, {"configurable": {"thread_id": "t"}})]
     )
 
 
-def test_session_id_in_intermediate_tool_message_is_acceptable() -> None:
-    """
-    A ToolMessage CAN contain mcp_session_id (it is an intermediate record,
-    not shown to the user).  Only the *final AIMessage* is the safety boundary.
-    """
-    intermediate_tool_msg = ToolMessage(
-        content=f'{{"mcp_session_id": "{_SECRET_SESSION}"}}',
-        tool_call_id="tc-mid",
+@pytest.fixture
+def _fake_graph(monkeypatch: pytest.MonkeyPatch):
+    """Point the module-global `_graph` (read by _stream_graph at call time) at a
+    fake whose events try to leak the session id."""
+
+    def _install(events: list[dict]) -> None:
+        monkeypatch.setattr(main, "_graph", _FakeGraph(events))
+
+    return _install
+
+
+# ── Eval 1: session id never reaches the SSE stream ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_session_id_never_forwarded_to_stream(_fake_graph) -> None:
+    """The real _stream_graph filter must drop tool args, tool output, and raw
+    state, so the session id — present in all three — never reaches the client."""
+    _fake_graph(_leaky_events())
+    out = await _collect()
+
+    assert _SECRET_SESSION not in out, f"session id leaked into SSE stream: {out!r}"
+
+
+@pytest.mark.asyncio
+async def test_answer_and_handoff_are_forwarded(_fake_graph) -> None:
+    """Positive control: the whitelist still lets the real signal through, so the
+    'session id absent' assertion above is meaningful and not vacuously true."""
+    _fake_graph(_leaky_events())
+    out = await _collect()
+
+    assert _ANSWER in out, "the model answer must reach the client"
+    assert '"type": "text"' in out
+    assert '"type": "handoff"' in out  # transfer_to_library_agent surfaced
+    assert '"agent": "library"' in out  # derived name only, no args
+    assert '"type": "done"' in out
+
+
+# ── Eval 2: exceptions do not leak internal detail ────────────────────────────
+
+
+class _RaisingGraph:
+    async def astream_events(self, input_data, config, version):  # noqa: ARG002
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "supervisor",
+            "data": {"chunk": AIMessageChunk(content="부분 응답")},
+        }
+        raise RuntimeError(f"psycopg pool broke at {_SECRET_SESSION}")
+
+
+@pytest.mark.asyncio
+async def test_stream_error_hides_internal_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A crash mid-stream must yield the generic error envelope — never the
+    exception message, which can carry DB/session internals."""
+    monkeypatch.setattr(main, "_graph", _RaisingGraph())
+
+    out = "".join(
+        [sse async for sse in main._stream_graph({}, {"configurable": {"thread_id": "t"}})]
     )
-    # Confirm the intermediate message does contain the id (expected)
-    assert _SECRET_SESSION in intermediate_tool_msg.content
 
-
-# ── Eval 2: mock tool responses contain no password/token literals ────────────
-
-
-@pytest.mark.parametrize(
-    "tool_response",
-    [
-        '{"grades": []}',
-        '{"items": []}',
-        '{"dashboard": []}',
-        '{"floors": []}',
-        '{"status": "OK", "data": {"actionId": 42, "seatLabel": "A-001"}}',
-        '{"status": "OK"}',
-        '{"loginUrl": "https://example.com/login"}',
-        '{"courses": []}',
-        '{"materials": []}',
-        "오늘 학식: 제육볶음",
-        '{"downloadUrl": "https://example.com/download"}',
-    ],
-)
-def test_mock_tool_responses_contain_no_password_literals(tool_response: str) -> None:
-    """
-    Mock tool responses used in the test suite must not contain password or
-    credential literals that could be inadvertently exposed in snapshots or logs.
-    """
-    response_lower = tool_response.lower()
-    for literal in _SECRET_PASSWORD_LITERALS:
-        assert literal.lower() not in response_lower, (
-            f"Tool response contains sensitive literal '{literal}': {tool_response!r}"
-        )
-
-
-@pytest.mark.parametrize(
-    "tool_response",
-    [
-        '{"grades": []}',
-        '{"status": "OK", "data": {"actionId": 42, "seatLabel": "A-001"}}',
-        '{"loginUrl": "https://example.com/login"}',
-    ],
-)
-def test_mock_tool_responses_contain_no_raw_token_literals(tool_response: str) -> None:
-    """Mock tool responses must not contain raw Pyxis token or Bearer literals."""
-    response_lower = tool_response.lower()
-    for literal in _SECRET_TOKEN_LITERALS:
-        assert literal.lower() not in response_lower, (
-            f"Tool response leaks token literal '{literal}': {tool_response!r}"
-        )
-
-
-# ── Eval 3: tool result echo does not propagate to user-facing answer ─────────
-
-
-def test_tool_response_with_session_id_not_echoed_in_final_message() -> None:
-    """
-    When a ToolMessage's content includes mcp_session_id (e.g., an echo from
-    the MCP server), the final AIMessage that the user sees must not repeat it.
-    """
-    raw_tool_output = f'{{"status": "OK", "mcp_session_id": "{_SECRET_SESSION}", "seat": "B-007"}}'
-    state: SsuAgentState = {
-        "messages": [
-            HumanMessage(content="자리 예약 확인해줘"),
-            ToolMessage(content=raw_tool_output, tool_call_id="tc-confirm"),
-            AIMessage(content="B-007 좌석 예약이 확정되었습니다. 이용 시간을 확인하세요."),
-        ],
-        "mcp_session_id": _SECRET_SESSION,
-        "active_agent": None,
-    }
-
-    final = _final_ai_content(state)
-    assert _SECRET_SESSION not in final, f"Session id must not be echoed in final answer: {final!r}"
-    # Positive assertion: the answer is still meaningful
-    assert "B-007" in final or "예약" in final
+    assert '"type": "error"' in out
+    assert _SECRET_SESSION not in out, "exception detail leaked into the stream"
+    assert "psycopg" not in out
