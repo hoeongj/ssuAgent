@@ -114,7 +114,7 @@ async def run_react_loop(
             last_ai = next(
                 (
                     m
-                    for m in reversed(history[len(input_messages):])
+                    for m in reversed(history[len(input_messages) :])
                     if isinstance(m, AIMessage) and m.content
                 ),
                 None,

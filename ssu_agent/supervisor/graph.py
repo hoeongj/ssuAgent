@@ -267,8 +267,7 @@ async def build_supervisor_graph(
     # re-compiled the identical graph on every request (and again per provider in
     # the fallback loop). Pre-building keeps the same fallback order.
     supervisor_reacts = [
-        create_react_agent(_llm, supervisor_tools, prompt=_SUPERVISOR_PROMPT)
-        for _llm in llm_seq
+        create_react_agent(_llm, supervisor_tools, prompt=_SUPERVISOR_PROMPT) for _llm in llm_seq
     ]
 
     async def supervisor_node(state: SsuAgentState, config: RunnableConfig) -> dict:

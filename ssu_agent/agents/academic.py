@@ -58,9 +58,7 @@ def build_academic_agent(
 
     async def agent_node(state: SsuAgentState, config: RunnableConfig) -> dict:
         prompt = _build_academic_prompt(state.get("mcp_session_id"))
-        return await run_react_loop(
-            llm_seq, academic_tools, prompt, "학사 에이전트", state, config
-        )
+        return await run_react_loop(llm_seq, academic_tools, prompt, "학사 에이전트", state, config)
 
     graph = StateGraph(SsuAgentState)
     graph.add_node("agent", agent_node)
