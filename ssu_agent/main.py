@@ -39,8 +39,12 @@ Streaming optimisation:
   astream_events(version="v2") yields rich event dicts. We filter:
   - on_chat_model_stream   → text chunks (user sees typing)
   - on_tool_start          → handoff/tool events (user sees "routing...")
-  - on_interrupt           → HITL payload (client shows approval dialog)
-  Skipping on_chain_* and on_retriever_* avoids SSE noise.
+  - on_chain_stream        → HITL payload when a chunk carries __interrupt__
+                             (client shows approval dialog). langgraph 1.2.4 does
+                             NOT emit an on_interrupt event — the interrupt rides
+                             inside an on_chain_stream chunk. See _extract_interrupt.
+  Other on_chain_* / on_retriever_* chunks are dropped (SSE noise, and raw state
+  can carry mcp_session_id — never forwarded).
 """
 
 from __future__ import annotations
@@ -239,6 +243,24 @@ def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _extract_interrupt(chunk: object) -> dict | None:
+    """Return the HITL payload if this astream_events chunk carries an interrupt.
+
+    langgraph 1.2.4's astream_events(version="v2") does NOT emit a dedicated
+    on_interrupt event. When a node calls interrupt(), the graph pauses and the
+    interrupt surfaces inside an on_chain_stream chunk shaped like
+    {"__interrupt__": (Interrupt(value=<payload>, ...),)}. We forward only the
+    first Interrupt's .value (the developer-controlled approval payload), never
+    the surrounding chunk, so raw graph state is not leaked.
+    """
+    if isinstance(chunk, dict):
+        interrupts = chunk.get("__interrupt__")
+        if interrupts:
+            first = interrupts[0]
+            return getattr(first, "value", first)
+    return None
+
+
 async def _stream_graph(input_data: dict | object, config: dict):
     """Yield SSE strings from graph.astream_events."""
     try:
@@ -272,10 +294,14 @@ async def _stream_graph(input_data: dict | object, config: dict):
                     label = _TOOL_LABELS.get(name, name)
                     yield _sse({"type": "tool", "name": name, "label": label})
 
-            elif etype == "on_interrupt":
-                interrupt_data = event.get("data", {})
-                yield _sse({"type": "interrupt", "data": interrupt_data})
-                return  # Pause SSE; client waits for /agent/resume
+            elif etype == "on_chain_stream":
+                # langgraph surfaces an interrupt() pause inside a chain-stream
+                # chunk (not via a dedicated event). Forward the HITL payload and
+                # stop; the client shows the approval card and calls /agent/resume.
+                interrupt_data = _extract_interrupt(event.get("data", {}).get("chunk"))
+                if interrupt_data is not None:
+                    yield _sse({"type": "interrupt", "data": interrupt_data})
+                    return  # Pause SSE; client waits for /agent/resume
 
     except Exception:
         # Do not reflect the exception detail to the client — it can carry
