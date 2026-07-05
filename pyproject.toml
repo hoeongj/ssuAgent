@@ -4,7 +4,11 @@ version = "0.2.0"
 description = "LangGraph campus assistant agent for Soongsil University"
 requires-python = ">=3.12"
 dependencies = [
-    "langgraph>=0.3",
+    # Pinned to the 1.2.x line: the graph relies on 1.2.4-specific behaviour
+    # (interrupt() surfaces only inside on_chain_stream, Command-from-tools not
+    # propagating, RunnableWithFallbacks lacking bind_tools). An upgrade past 1.2.x
+    # would silently break HITL with green tests — see docs/adr/0001.
+    "langgraph>=1.2.4,<1.3",
     "langchain-mcp-adapters>=0.1",
     "langchain-google-genai>=2",
     "langchain-core>=0.3",

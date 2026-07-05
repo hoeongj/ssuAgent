@@ -9,7 +9,7 @@ Endpoints:
 SSE event types emitted:
   {"type": "text",    "content": "..."}    — LLM token chunk
   {"type": "handoff", "agent": "library"}  — sub-agent routing started
-  {"type": "tool",    "name": "..."}       — any tool call started (debug)
+  {"type": "tool",    "name": "..."}       — tool call started (Korean UX label via _TOOL_LABELS)
   {"type": "interrupt","data": {...}}       — HITL payload awaiting user decision
   {"type": "done"}                          — graph reached END
 
@@ -118,7 +118,31 @@ _TOOL_LABELS: dict[str, str] = {
     "get_my_assignments": "과제 목록 조회 중...",
     "get_today_meal": "오늘 식단 조회 중...",
     "get_meal_by_date": "식단 조회 중...",
+    "get_meal_weekly": "주간 식단 조회 중...",
+    "get_dorm_weekly_meal": "기숙사 주간 식단 조회 중...",
     "search_campus_facilities": "캠퍼스 시설 검색 중...",
+    # LMS (강의/과제/자료 내보내기)
+    "get_my_lms_courses": "수강 강의 조회 중...",
+    "get_my_lms_materials": "강의자료 조회 중...",
+    "get_my_lms_terms": "학기 목록 조회 중...",
+    "get_lms_dashboard": "LMS 대시보드 조회 중...",
+    "prepare_lms_material_export": "강의자료 내보내기 준비 중...",
+    "confirm_lms_material_export": "강의자료 내보내기 확정 중...",
+    # 학사일정 · 학칙/졸업/장학 근거
+    "get_academic_calendar": "학사일정 조회 중...",
+    "find_academic_calendar_events": "학사일정 검색 중...",
+    "get_academic_policy_brief": "학칙 요약 조회 중...",
+    "search_academic_policy_sources": "학칙 근거 검색 중...",
+    "check_scholarship_policy": "장학 정책 확인 중...",
+    "evaluate_graduation_with_policy": "졸업 요건 평가 중...",
+    # 도서관 대기 · 열람실 좌석
+    "get_room_available_seats": "열람실 좌석 조회 중...",
+    "get_library_wait_status": "대기 현황 조회 중...",
+    "wait_for_library_seat": "좌석 대기 등록 중...",
+    "cancel_library_wait": "대기 취소 중...",
+    # 세션
+    "logout_provider": "로그아웃 중...",
+    "logout_all": "전체 로그아웃 중...",
 }
 
 
