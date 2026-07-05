@@ -223,9 +223,10 @@ def build_library_agent(
             return {"active_agent": None}
 
         # ── interrupt() ──────────────────────────────────────────────────────
-        # Execution pauses here; LangGraph serialises state to SQLite checkpoint.
-        # FastAPI's astream_events yields an on_interrupt event, which main.py
-        # streams as {"type": "interrupt", "data": {...}} SSE.
+        # Execution pauses here; LangGraph serialises state to the checkpointer
+        # (prod=Postgres, local=SQLite). The pause surfaces in astream_events as an
+        # on_chain_stream chunk carrying __interrupt__ (NOT an on_interrupt event);
+        # main._extract_interrupt forwards the Interrupt value as {"type":"interrupt"} SSE.
         # Client resumes via POST /agent/resume → Command(resume={approved, action_id}).
         resume = interrupt({"type": "library_reservation_approval", **action})
         # ────────────────────────────────────────────────────────────────────

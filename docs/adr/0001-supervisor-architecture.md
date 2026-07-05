@@ -150,9 +150,9 @@ FastAPI 요청마다 최신 `mcp_session_id`를 state에 주입하므로, 동일
 | `on_chat_model_stream` | `{type:"text", content:"..."}` | 토큰별 LLM 출력 |
 | `on_tool_start` (name: `transfer_to_*`) | `{type:"handoff", agent:"library", message:"도서관 에이전트로 전환 중..."}` | 에이전트 전환 UX |
 | `on_tool_start` (other) | `{type:"tool", name:"..."}` | 디버그용 도구 호출 |
-| `on_interrupt` | `{type:"interrupt", data:{...}}` | HITL 승인 요청 |
+| `on_chain_stream` 청크의 `__interrupt__` | `{type:"interrupt", data:{...}}` | HITL 승인 요청 (⚠️ `on_interrupt` 이벤트 아님 — 위 3절 정정 참조) |
 
-`on_chain_*`, `on_retriever_*` 이벤트는 필터링 제외 — SSE 노이즈 방지.
+나머지 `on_chain_*`(인터럽트 없는 청크), `on_retriever_*` 이벤트는 필터링 제외 — SSE 노이즈 방지.
 
 ---
 

@@ -46,7 +46,8 @@ Streaming:
   FastAPI calls graph.astream_events(version="v2") and filters:
   - on_chat_model_stream → text chunks (token-by-token output)
   - on_tool_start where name starts with "transfer_to_" → handoff status UX
-  - on_interrupt → HITL payload for library approval
+  - on_chain_stream carrying __interrupt__ → HITL payload for library approval
+    (langgraph 1.2.4 does not emit an on_interrupt event; see main._extract_interrupt)
 """
 
 from __future__ import annotations
