@@ -5,7 +5,7 @@
 | 날짜 | 2026-06-23 |
 | 상태 | Accepted — 구현(브랜치 `fix/agent-edge-hardening`) |
 | 범위 | `ssu_agent/main.py` · `ssu_agent/config.py` · `pyproject.toml`/`uv.lock`(slowapi) · `tests/test_main_security.py` |
-| 연관 | ssuMCP [ADR 0061](../../../ssuMCP/docs/adr/0061-per-ip-rate-limit-input-caps.md)(포팅 원본) · `mp/IMPROVEMENT_ANALYSIS_2026-06-23.md` S1 |
+| 연관 | ssuMCP [ADR 0061](https://github.com/ghdtjdwn/ssuMCP/blob/main/docs/adr/0061-per-ip-rate-limit-input-caps.md)(포팅 원본) |
 
 ---
 

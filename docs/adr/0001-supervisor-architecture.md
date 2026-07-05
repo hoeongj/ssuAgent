@@ -51,8 +51,10 @@ LangGraph는 노드 경계에서만 상태를 체크포인트한다. `interrupt(
 
 ```
 agent_node  
-    └─ create_react_agent (prepare_*만 포함, confirm_action 제외)
-    └─ ReAct 루프 실행 → prepare_reserve 결과의 ToolMessage 포함
+    └─ 수동 bind_tools 루프 (prepare_*만 포함, confirm_action 제외)
+       ※ create_react_agent는 turn-2에서 prepare_*를 중복 호출(actionId 2개 → 승인 게이트가
+         stale action을 물어 오작동)해 폐기. 근거는 agents/library.py 모듈 docstring 참조.
+    └─ 루프 실행 → prepare_reserve 결과의 ToolMessage 포함, actionId 발견 즉시 break
 router (_has_pending_action)  ← 순수 함수, interrupt 없음
     └─ actionId 발견 → check_approval_node
     └─ 없음 → done_node
