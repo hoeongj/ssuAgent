@@ -68,6 +68,11 @@ from slowapi.util import get_remote_address
 from ssu_agent import config
 from ssu_agent.supervisor.graph import build_supervisor_graph
 
+# uvicorn configures the root logger at WARNING, which swallows our INFO-level
+# latency instrumentation (react_loop per-turn provider + per-tool timing). Raise
+# the package logger to INFO so those records reach uvicorn's handler in prod.
+logging.getLogger("ssu_agent").setLevel(logging.INFO)
+
 logger = logging.getLogger(__name__)
 
 
