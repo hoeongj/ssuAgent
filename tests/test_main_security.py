@@ -13,6 +13,11 @@ from fastapi.testclient import TestClient
 
 from ssu_agent import config, main
 
+# ADR 0011: thread_owners rows are (owner, owner_kind) pairs — owner_kind is
+# "principal" (stable subject), "session" (mcp_session_id, ADR 0010 legacy
+# behavior), or None alongside owner=None for an anonymous thread.
+OwnerRow = tuple[str | None, str | None]
+
 
 async def _fake_stream_graph(input_data, config):  # noqa: A002 - mirrors prod signature
     """Stand-in for _stream_graph: one dummy SSE line, no LLM/DB."""
@@ -20,9 +25,9 @@ async def _fake_stream_graph(input_data, config):  # noqa: A002 - mirrors prod s
 
 
 class _FakeOwnerCursor:
-    def __init__(self, owners: dict[str, str | None]):
+    def __init__(self, owners: dict[str, OwnerRow]):
         self.owners = owners
-        self._row: tuple[str | None] | None = None
+        self._row: OwnerRow | None = None
 
     async def __aenter__(self):
         return self
@@ -33,15 +38,23 @@ class _FakeOwnerCursor:
     async def execute(self, query: str, params: tuple | None = None):
         normalized = " ".join(query.split()).upper()
         if normalized.startswith("INSERT INTO THREAD_OWNERS"):
-            thread_id, owner = params
-            self.owners.setdefault(thread_id, owner)
+            thread_id, owner, owner_kind = params
+            self.owners.setdefault(thread_id, (owner, owner_kind))
             self._row = None
             return
-        if normalized.startswith("SELECT OWNER FROM THREAD_OWNERS"):
+        if normalized.startswith("SELECT OWNER, OWNER_KIND FROM THREAD_OWNERS"):
             (thread_id,) = params
-            self._row = (self.owners[thread_id],) if thread_id in self.owners else None
+            self._row = self.owners.get(thread_id)
+            return
+        if normalized.startswith("UPDATE THREAD_OWNERS"):
+            owner, thread_id = params
+            self.owners[thread_id] = (owner, "principal")
+            self._row = None
             return
         if normalized.startswith("CREATE TABLE IF NOT EXISTS THREAD_OWNERS"):
+            self._row = None
+            return
+        if normalized.startswith("ALTER TABLE THREAD_OWNERS"):
             self._row = None
             return
         raise AssertionError(f"unexpected query: {query}")
@@ -51,7 +64,7 @@ class _FakeOwnerCursor:
 
 
 class _FakeOwnerConnection:
-    def __init__(self, owners: dict[str, str | None]):
+    def __init__(self, owners: dict[str, OwnerRow]):
         self.owners = owners
 
     async def __aenter__(self):
@@ -66,7 +79,7 @@ class _FakeOwnerConnection:
 
 class _FakeOwnerPool:
     def __init__(self):
-        self.owners: dict[str, str | None] = {}
+        self.owners: dict[str, OwnerRow] = {}
 
     def connection(self):
         return _FakeOwnerConnection(self.owners)
@@ -127,7 +140,7 @@ def test_stream_binds_new_thread_and_allows_same_owner(
         json={"message": "hi", "thread_id": "owned-t1", "mcp_session_id": "mcp-a"},
     )
     assert resp.status_code == 200
-    assert owner_pool.owners["owned-t1"] == "mcp-a"
+    assert owner_pool.owners["owned-t1"] == ("mcp-a", "session")
 
     resp = client.post(
         "/agent/stream",
@@ -157,14 +170,14 @@ def test_stream_allows_anonymous_thread(client: TestClient, owner_pool: _FakeOwn
         json={"message": "hi", "thread_id": "anon-t1"},
     )
     assert resp.status_code == 200
-    assert owner_pool.owners["anon-t1"] is None
+    assert owner_pool.owners["anon-t1"] == (None, None)
 
     resp = client.post(
         "/agent/stream",
         json={"message": "again", "thread_id": "anon-t1", "mcp_session_id": "mcp-a"},
     )
     assert resp.status_code == 200
-    assert owner_pool.owners["anon-t1"] is None
+    assert owner_pool.owners["anon-t1"] == (None, None)
 
 
 def test_resume_rejects_different_owner(client: TestClient):
@@ -181,6 +194,159 @@ def test_resume_rejects_different_owner(client: TestClient):
             "approved": True,
             "action_id": 1,
             "mcp_session_id": "mcp-b",
+        },
+    )
+    assert resp.status_code == 403
+
+
+# ── ADR 0011: stable-principal thread ownership ─────────────────────────────────
+
+
+def test_stream_same_principal_across_sessions_sees_same_thread(
+    client: TestClient,
+    owner_pool: _FakeOwnerPool,
+):
+    """Re-login (new mcp_session_id) with the same stable principal must still
+    resolve to the thread the principal created — the whole point of ADR 0011."""
+    resp = client.post(
+        "/agent/stream",
+        json={
+            "message": "hi",
+            "thread_id": "principal-t1",
+            "mcp_session_id": "mcp-device-a",
+            "principal": "student-123",
+        },
+    )
+    assert resp.status_code == 200
+    assert owner_pool.owners["principal-t1"][1] == "principal"
+
+    # Different device/session (e.g. re-login issued a new mcp_session_id), same
+    # principal — must be treated as the same owner, not rejected.
+    resp = client.post(
+        "/agent/stream",
+        json={
+            "message": "again from another device",
+            "thread_id": "principal-t1",
+            "mcp_session_id": "mcp-device-b",
+            "principal": "student-123",
+        },
+    )
+    assert resp.status_code == 200
+
+
+def test_stream_rejects_different_principal(client: TestClient):
+    resp = client.post(
+        "/agent/stream",
+        json={
+            "message": "hi",
+            "thread_id": "principal-t2",
+            "mcp_session_id": "mcp-a",
+            "principal": "student-A",
+        },
+    )
+    assert resp.status_code == 200
+
+    resp = client.post(
+        "/agent/stream",
+        json={
+            "message": "steal",
+            "thread_id": "principal-t2",
+            "mcp_session_id": "mcp-b",
+            "principal": "student-B",
+        },
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "이 대화는 현재 세션의 소유가 아닙니다."
+
+
+def test_stream_anonymous_flow_unchanged_when_no_principal_ever_sent(
+    client: TestClient,
+    owner_pool: _FakeOwnerPool,
+):
+    """No caller today sends `principal` (ADR 0011 is ssuAgent-side prep only) —
+    the entire existing session-bound / anonymous behavior must be untouched."""
+    resp = client.post(
+        "/agent/stream",
+        json={"message": "hi", "thread_id": "legacy-anon"},
+    )
+    assert resp.status_code == 200
+    assert owner_pool.owners["legacy-anon"] == (None, None)
+
+    resp = client.post(
+        "/agent/stream",
+        json={"message": "hi", "thread_id": "legacy-session", "mcp_session_id": "mcp-x"},
+    )
+    assert resp.status_code == 200
+    assert owner_pool.owners["legacy-session"] == ("mcp-x", "session")
+
+    resp = client.post(
+        "/agent/stream",
+        json={
+            "message": "steal",
+            "thread_id": "legacy-session",
+            "mcp_session_id": "mcp-y",
+        },
+    )
+    assert resp.status_code == 403
+
+
+def test_lazy_migration_rebinds_session_owned_thread_to_principal_once(
+    client: TestClient,
+    owner_pool: _FakeOwnerPool,
+):
+    """A thread created before any caller sent `principal` (session-owned, ADR
+    0010 shape) must be lazily upgraded to principal-owned the first time its
+    rightful session presents one — then a different session with that same
+    principal must find it (rotation survived), while the upgrade must not
+    silently re-run / re-key on every subsequent call."""
+    # 1) Legacy session-only claim (no principal yet — mirrors a thread that
+    #    predates this frontend rollout).
+    resp = client.post(
+        "/agent/stream",
+        json={"message": "hi", "thread_id": "migrate-t1", "mcp_session_id": "mcp-orig"},
+    )
+    assert resp.status_code == 200
+    assert owner_pool.owners["migrate-t1"] == ("mcp-orig", "session")
+
+    # 2) The rightful session now starts sending a principal -> lazy rebind.
+    resp = client.post(
+        "/agent/stream",
+        json={
+            "message": "now authenticated",
+            "thread_id": "migrate-t1",
+            "mcp_session_id": "mcp-orig",
+            "principal": "student-123",
+        },
+    )
+    assert resp.status_code == 200
+    assert owner_pool.owners["migrate-t1"][1] == "principal"
+    migrated_owner = owner_pool.owners["migrate-t1"][0]
+
+    # 3) Re-login: brand new mcp_session_id, same principal -> same thread found
+    #    (this is what ADR 0010 alone could never do).
+    resp = client.post(
+        "/agent/stream",
+        json={
+            "message": "after re-login",
+            "thread_id": "migrate-t1",
+            "mcp_session_id": "mcp-new-device",
+            "principal": "student-123",
+        },
+    )
+    assert resp.status_code == 200
+    # Runs at most once: the stored owner/kind is stable across further calls,
+    # not re-derived or re-written on every request.
+    assert owner_pool.owners["migrate-t1"] == (migrated_owner, "principal")
+
+    # 4) The original session, now stale for this thread, no longer matches on
+    #    its own (session-only auth is no longer sufficient once a thread is
+    #    principal-owned) unless it also presents the principal.
+    resp = client.post(
+        "/agent/stream",
+        json={
+            "message": "old session without principal",
+            "thread_id": "migrate-t1",
+            "mcp_session_id": "mcp-orig",
         },
     )
     assert resp.status_code == 403

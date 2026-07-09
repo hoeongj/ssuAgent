@@ -13,27 +13,40 @@ SSE event types emitted:
   {"type": "interrupt","data": {...}}       — HITL payload awaiting user decision
   {"type": "done"}                          — graph reached END
 
-MCP session lifecycle (thread_id ↔ mcp_session_id):
+MCP session lifecycle (thread_id ↔ mcp_session_id ↔ principal):
   Every FastAPI request carries a `thread_id` (stable per user/device) used
   as the LangGraph checkpoint key. The `mcp_session_id` (ssuMCP private tool
   auth token) is passed in the request body and stored in SsuAgentState so
   sub-agents can include it in private MCP tool calls.
 
-  The two IDs are intentionally separate:
+  The three concepts are intentionally separate:
   - thread_id: conversation persistence (Postgres checkpoint)
-  - mcp_session_id: ssuMCP auth (externally managed by ssuAI login flow)
-  A thread is bound to the mcp_session_id that first creates it via the
-  thread_owners table. Anonymous threads (owner NULL) remain accessible without
-  upgrading ownership; authenticated threads reject access from another session.
-  The graph still takes the latest mcp_session_id from the request for MCP tool
-  calls after ownership is verified.
+  - mcp_session_id: ssuMCP auth (externally managed by ssuAI login flow,
+    ROTATES on every re-login — never a stable per-user key)
+  - principal: OPTIONAL stable per-user subject supplied by the caller (e.g. a
+    frontend JWT subject). ssuAgent does not derive this itself — see ADR 0011
+    for why (ssuMCP's get_auth_status deliberately never returns a student id
+    / principalKey; resolving one would require a cross-repo ssuMCP change).
+
+  A thread's ownership is claimed/verified by claim_or_verify_thread_owner:
+  - principal present -> bound to the (hashed) principal. Stable across
+    mcp_session_id rotation: the same principal from a different session still
+    resolves to the same thread. A different principal is rejected (403).
+  - principal absent, mcp_session_id present -> bound to that session only
+    (legacy behavior, unchanged): a different session is rejected (403).
+  - neither present -> anonymous thread (owner NULL), open to any caller, same
+    as before ADR 0011.
+  A pre-existing session-owned thread is lazily upgraded to principal
+  ownership the first time its rightful session presents a principal (see ADR
+  0011 "마이그레이션 규칙"). The graph still takes the latest mcp_session_id
+  from the request for MCP tool calls after ownership is verified.
 
 Checkpointer (Postgres):
   Uses AsyncPostgresSaver from langgraph-checkpoint-postgres backed by
   an AsyncConnectionPool (psycopg3). autocommit=True is required by LangGraph.
   setup() creates the checkpoint tables on first startup. The same pool also
   creates thread_owners, which binds client-supplied thread_id values to the
-  creating mcp_session_id.
+  creating mcp_session_id or, when supplied, a stable principal (ADR 0011).
 
 Streaming optimisation:
   astream_events(version="v2") yields rich event dicts. We filter:
@@ -49,6 +62,7 @@ Streaming optimisation:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import secrets
@@ -191,6 +205,12 @@ async def _setup_thread_owners(pool: AsyncConnectionPool) -> None:
                 )
                 """
             )
+            # ADR 0011: owner_kind distinguishes a stable-principal owner from a
+            # legacy/session-scoped owner. ADD COLUMN IF NOT EXISTS keeps this
+            # additive over the ADR 0010 table already live in prod — existing
+            # rows get owner_kind = NULL, which claim_or_verify_thread_owner
+            # treats identically to owner_kind = 'session' (see docstring there).
+            await cur.execute("ALTER TABLE thread_owners ADD COLUMN IF NOT EXISTS owner_kind TEXT")
 
 
 app = FastAPI(title="ssuAgent", version="0.2.0", lifespan=_lifespan)
@@ -226,33 +246,106 @@ async def verify_agent_key(x_agent_key: str | None = Header(default=None)) -> No
         raise HTTPException(status_code=401, detail="Invalid or missing X-Agent-Key")
 
 
-async def claim_or_verify_thread_owner(thread_id: str, mcp_session_id: str | None) -> None:
-    """Bind a new thread to its creating MCP session, or verify existing owner."""
+def _hash_principal(principal: str) -> str:
+    """One-way digest of a caller-supplied stable principal before it touches storage.
+
+    ssuMCP's get_auth_status deliberately never returns a raw student id (see ADR
+    0011), so ssuAgent never derives `principal` itself — it only ever receives
+    whatever value a future caller chooses to send. Hashing it before it reaches
+    `thread_owners` means a DB dump never reveals the plaintext subject, while
+    equality comparisons (the only operation ownership binding needs) still work
+    identically on the digest.
+    """
+    return hashlib.sha256(principal.encode("utf-8")).hexdigest()
+
+
+async def claim_or_verify_thread_owner(
+    thread_id: str,
+    mcp_session_id: str | None,
+    principal: str | None = None,
+) -> None:
+    """Bind a new thread to its owner, or verify the current caller against it.
+
+    ADR 0011. `principal` is an optional stable per-user subject (e.g. a future
+    frontend JWT subject) — see the module docstring. Resolution order:
+
+    1. `principal` present -> the thread is owned by hash(principal). This
+       survives `mcp_session_id` rotation (re-login): the same principal from a
+       *different* session still matches. A *different* principal is rejected.
+    2. `principal` absent, `mcp_session_id` present -> owned by that session only
+       (ADR 0010 behavior, unchanged): a different session is rejected.
+    3. Neither present -> anonymous thread (owner NULL), open to any caller,
+       unchanged from ADR 0010.
+
+    Lazy migration: a thread claimed under rule 2 (session-owned) is upgraded to
+    rule 1 (principal-owned) the moment its rightful session presents a
+    `principal` — i.e. on the first verified access from that session after the
+    caller starts sending one. See docs/adr/0011 for why lazy beats a batch
+    migration here (there is no batch of principals to backfill from — the
+    value only exists once a caller starts sending it).
+    """
     if _pool is None:
         raise HTTPException(status_code=503, detail="Agent storage is not ready")
+
+    hashed_principal = _hash_principal(principal) if principal else None
+
+    if hashed_principal is not None:
+        claim_owner, claim_kind = hashed_principal, "principal"
+    elif mcp_session_id is not None:
+        claim_owner, claim_kind = mcp_session_id, "session"
+    else:
+        claim_owner, claim_kind = None, None
 
     async with _pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO thread_owners (thread_id, owner)
-                VALUES (%s, %s)
+                INSERT INTO thread_owners (thread_id, owner, owner_kind)
+                VALUES (%s, %s, %s)
                 ON CONFLICT (thread_id) DO NOTHING
                 """,
-                (thread_id, mcp_session_id),
+                (thread_id, claim_owner, claim_kind),
             )
             await cur.execute(
-                "SELECT owner FROM thread_owners WHERE thread_id = %s",
+                "SELECT owner, owner_kind FROM thread_owners WHERE thread_id = %s",
                 (thread_id,),
             )
             row = await cur.fetchone()
 
-    if row is None:
-        raise HTTPException(status_code=503, detail="Agent storage is not ready")
+            if row is None:
+                raise HTTPException(status_code=503, detail="Agent storage is not ready")
 
-    stored_owner = row[0]
-    if stored_owner is not None and stored_owner != mcp_session_id:
-        raise HTTPException(status_code=403, detail=_THREAD_OWNER_FORBIDDEN_DETAIL)
+            stored_owner, stored_kind = row
+
+            if stored_owner is None:
+                return  # Anonymous thread — open to any caller (ADR 0010).
+
+            if stored_kind == "principal":
+                if hashed_principal is not None and hashed_principal == stored_owner:
+                    return
+                raise HTTPException(status_code=403, detail=_THREAD_OWNER_FORBIDDEN_DETAIL)
+
+            # stored_kind == "session", or NULL for rows written before ADR 0011
+            # shipped (pre-existing ADR 0010 rows never had an owner_kind column
+            # value) — both mean "owned by the mcp_session_id in `owner`".
+            if stored_owner != mcp_session_id:
+                raise HTTPException(status_code=403, detail=_THREAD_OWNER_FORBIDDEN_DETAIL)
+
+            # Verified as the rightful session. If this request now carries a
+            # principal, lazily upgrade the thread from session- to
+            # principal-ownership so a future re-login (new mcp_session_id, same
+            # principal) still finds it. Runs at most once per thread: after
+            # this UPDATE, stored_kind is "principal" and the branch above
+            # handles all later calls.
+            if hashed_principal is not None:
+                await cur.execute(
+                    """
+                    UPDATE thread_owners
+                    SET owner = %s, owner_kind = 'principal'
+                    WHERE thread_id = %s
+                    """,
+                    (hashed_principal, thread_id),
+                )
 
 
 # ── Request / response models ─────────────────────────────────────────────────
@@ -263,6 +356,11 @@ class AgentRequest(BaseModel):
     message: str = Field(max_length=config.AGENT_MAX_MESSAGE_CHARS)
     thread_id: str = ""  # "" → new conversation
     mcp_session_id: str | None = None
+    # ADR 0011: optional stable per-user subject (e.g. a frontend JWT subject),
+    # independent of the rotating mcp_session_id. Absent today from every known
+    # caller — see ADR 0011 for the follow-up this unblocks — so it MUST default
+    # to None and every code path MUST keep working when it is never sent.
+    principal: str | None = None
 
 
 class ResumeRequest(BaseModel):
@@ -270,6 +368,7 @@ class ResumeRequest(BaseModel):
     approved: bool
     action_id: int | None = None
     mcp_session_id: str | None = None
+    principal: str | None = None
 
 
 # ── SSE helpers ───────────────────────────────────────────────────────────────
@@ -359,7 +458,7 @@ async def _stream_graph(input_data: dict | object, config: dict):
 async def stream_agent(request: Request, req: AgentRequest):
     """Start or continue a conversation. Streams SSE events."""
     thread_id = req.thread_id or str(uuid.uuid4())
-    await claim_or_verify_thread_owner(thread_id, req.mcp_session_id)
+    await claim_or_verify_thread_owner(thread_id, req.mcp_session_id, req.principal)
     initial_state = {
         "messages": [{"role": "user", "content": req.message}],
         "mcp_session_id": req.mcp_session_id,
@@ -389,7 +488,7 @@ async def resume_agent(request: Request, req: ResumeRequest):
     """
     from langgraph.types import Command
 
-    await claim_or_verify_thread_owner(req.thread_id, req.mcp_session_id)
+    await claim_or_verify_thread_owner(req.thread_id, req.mcp_session_id, req.principal)
     resume_payload = {
         "approved": req.approved,
         "action_id": req.action_id,
