@@ -52,6 +52,7 @@ Streaming:
 
 from __future__ import annotations
 
+import logging
 import re
 
 from langchain_core.language_models import BaseChatModel
@@ -66,6 +67,8 @@ from ssu_agent.agents.library import build_library_agent
 from ssu_agent.agents.lms import build_lms_agent
 from ssu_agent.llm_factory import get_llm_sequence
 from ssu_agent.supervisor.state import SsuAgentState
+
+logger = logging.getLogger(__name__)
 
 # ── Tool-name categorisation ──────────────────────────────────────────────────
 
@@ -277,11 +280,16 @@ async def build_supervisor_graph(
 
     async def supervisor_node(state: SsuAgentState, config: RunnableConfig) -> dict:
         last_exc: Exception | None = None
-        for react in supervisor_reacts:
+        for idx, react in enumerate(supervisor_reacts):
             try:
                 result = await react.ainvoke({"messages": state["messages"]}, config=config)
                 return {"messages": result["messages"]}
             except Exception as exc:
+                # Same rationale as react_loop: surface WHY each provider failed
+                # instead of only re-raising the last one.
+                logger.warning(
+                    "[supervisor] provider #%d failed: %s: %s", idx, type(exc).__name__, exc
+                )
                 last_exc = exc
         raise last_exc or RuntimeError("All LLM providers exhausted")
 

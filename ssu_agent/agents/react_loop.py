@@ -162,6 +162,12 @@ async def run_react_loop(
             )
             return {"messages": [tagged], "active_agent": None}
         except Exception as exc:
+            # Log every provider failure — the fallback used to swallow all but
+            # the last exception, hiding WHY the earlier (preferred) providers
+            # failed when diagnosing quota/schema errors in prod.
+            logger.warning(
+                "[%s] provider=%s failed: %s: %s", tag, provider, type(exc).__name__, exc
+            )
             last_exc = exc
 
     raise last_exc or RuntimeError("All LLM providers exhausted")
