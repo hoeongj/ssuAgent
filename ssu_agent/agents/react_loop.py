@@ -15,7 +15,10 @@ agent (see the library agent's module docstring for the A/B detail).
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import time
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
@@ -24,7 +27,36 @@ from langchain_core.tools import BaseTool
 
 from ssu_agent.supervisor.state import SsuAgentState
 
-_MAX_TOOL_TURNS = 6
+logger = logging.getLogger(__name__)
+
+# Kept low on purpose: each turn is a sequential LLM round-trip, and the whole
+# sub-agent answer must reach the browser inside the Vercel proxy's 60s cap
+# (ssuAI app/api/agent/stream). 4 turns covers legitimate multi-tool answers
+# while stopping exploratory re-call storms that used to push latency past 60s.
+_MAX_TOOL_TURNS = 4
+
+
+def _provider_label(llm: BaseChatModel) -> str:
+    """Human-readable model id for latency logging (Groq vs Gemini vs …)."""
+    return getattr(llm, "model_name", None) or getattr(llm, "model", None) or type(llm).__name__
+
+
+async def _run_tool_call(tc: dict, tools: list[BaseTool], config: RunnableConfig) -> ToolMessage:
+    """Execute one tool call and return its ToolMessage. Never raises so the
+    surrounding asyncio.gather resolves for every call in the turn."""
+    call_id = tc.get("id", "")
+    name = tc.get("name", "")
+    matched = next((t for t in tools if t.name == name), None)
+    if matched is None:
+        return ToolMessage(content=f"Tool '{name}' not found.", tool_call_id=call_id)
+    started = time.perf_counter()
+    try:
+        result = await matched.ainvoke(tc.get("args", {}), config=config)
+        content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+    except Exception as tool_exc:
+        content = f"Tool error: {tool_exc}"
+    logger.info("tool %s finished in %.2fs", name, time.perf_counter() - started)
+    return ToolMessage(content=content, tool_call_id=call_id)
 
 
 def drop_routing_messages(messages: list) -> list:
@@ -79,37 +111,43 @@ async def run_react_loop(
 
     last_exc: Exception | None = None
     for _llm in llm_seq:
+        provider = _provider_label(_llm)
         try:
             llm_with_tools = _llm.bind_tools(tools)
             history = list(input_messages)
 
-            for _ in range(_MAX_TOOL_TURNS):
+            for turn in range(_MAX_TOOL_TURNS):
+                turn_started = time.perf_counter()
                 response = await llm_with_tools.ainvoke(history, config=config)
                 history.append(response)
 
                 if not response.tool_calls:
+                    logger.info(
+                        "[%s] provider=%s turn=%d final (%.2fs)",
+                        tag,
+                        provider,
+                        turn,
+                        time.perf_counter() - turn_started,
+                    )
                     break
 
-                for tc in response.tool_calls:
-                    matched = next((t for t in tools if t.name == tc["name"]), None)
-                    if matched is None:
-                        history.append(
-                            ToolMessage(
-                                content=f"Tool '{tc['name']}' not found.",
-                                tool_call_id=tc.get("id", ""),
-                            )
-                        )
-                        continue
-                    try:
-                        result = await matched.ainvoke(tc.get("args", {}), config=config)
-                        content = (
-                            result
-                            if isinstance(result, str)
-                            else json.dumps(result, ensure_ascii=False)
-                        )
-                    except Exception as tool_exc:
-                        content = f"Tool error: {tool_exc}"
-                    history.append(ToolMessage(content=content, tool_call_id=tc.get("id", "")))
+                # Fan the turn's tool calls out concurrently. u-SAINT scrapes are
+                # the dominant cost; running N of them in parallel collapses the
+                # per-turn latency from sum-of-tools to slowest-tool. gather keeps
+                # result order aligned with response.tool_calls, so each ToolMessage
+                # still trails its AIMessage tool call in the expected order.
+                logger.info(
+                    "[%s] provider=%s turn=%d calling %d tool(s): %s",
+                    tag,
+                    provider,
+                    turn,
+                    len(response.tool_calls),
+                    [tc.get("name") for tc in response.tool_calls],
+                )
+                tool_messages = await asyncio.gather(
+                    *(_run_tool_call(tc, tools, config) for tc in response.tool_calls)
+                )
+                history.extend(tool_messages)
 
             last_ai = next(
                 (
