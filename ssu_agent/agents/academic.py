@@ -44,10 +44,13 @@ def _build_academic_prompt(mcp_session_id: str | None) -> str:
     prompt = _SYSTEM_PROMPT_BASE
     if mcp_session_id:
         prompt += (
-            f'\n\n[인증 세션] mcp_session_id = "{mcp_session_id}"\n'
-            "get_my_grades, check_graduation_requirements, simulate_gpa, get_my_schedule, "
-            "get_my_chapel_info, get_my_scholarships 등 인증이 필요한 도구 호출 시 "
-            "이 값을 mcp_session_id 파라미터로 반드시 포함하세요."
+            f"\n\n[인증 완료] 사용자는 이미 u-SAINT에 로그인되어 있습니다. "
+            f'mcp_session_id = "{mcp_session_id}".\n'
+            "절대 로그인을 다시 요청하거나 '로그인이 필요하다/필요할 수 있다'고 답하지 마세요. "
+            "성적·졸업요건·GPA·시간표·채플·장학 질문에는 해당 도구(get_my_grades, "
+            "check_graduation_requirements, simulate_gpa, get_my_schedule, get_my_chapel_info, "
+            "get_my_scholarships, evaluate_graduation_with_policy 등)를 위 mcp_session_id 값을 "
+            "mcp_session_id 파라미터로 넣어 지금 즉시 호출하고, 그 결과의 실제 값으로 답하세요."
         )
     else:
         # No auth session: personal-data tools would only fail (and start_auth

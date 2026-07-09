@@ -45,11 +45,12 @@ def _build_lms_prompt(mcp_session_id: str | None) -> str:
     prompt = _SYSTEM_PROMPT_BASE
     if mcp_session_id:
         prompt += (
-            f'\n\n[인증 세션] mcp_session_id = "{mcp_session_id}"\n'
-            "get_my_assignments, get_my_lms_terms, get_lms_dashboard, "
-            "get_my_lms_courses, get_my_lms_materials, "
-            "prepare_lms_material_export, confirm_lms_material_export "
-            "호출 시 이 값을 mcp_session_id 파라미터로 반드시 포함하세요."
+            "\n\n[인증 완료] 사용자는 이미 로그인되어 있습니다. "
+            f'mcp_session_id = "{mcp_session_id}".\n'
+            "절대 로그인을 다시 요청하지 마세요. 과제·강의자료·대시보드 질문에는 해당 도구"
+            "(get_my_assignments, get_my_lms_terms, get_lms_dashboard, get_my_lms_courses, "
+            "get_my_lms_materials, prepare_lms_material_export, confirm_lms_material_export)를 "
+            "위 mcp_session_id 값을 파라미터로 넣어 지금 즉시 호출하고, 그 결과로 답하세요."
         )
     else:
         # No auth session: every LMS tool needs the session. Answer with a login
