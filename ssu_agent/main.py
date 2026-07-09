@@ -178,7 +178,9 @@ async def _lifespan(app: FastAPI):
     global _graph, _pool
     async with AsyncConnectionPool(
         conninfo=config.DATABASE_URL,
-        max_size=5,
+        # Pool ceiling ~= concurrent streams x checkpointer ops. Five fits the
+        # current single-pod dozens-of-users shape; raise with replicas/HPA per load test.
+        max_size=config.AGENT_PG_POOL_MAX_SIZE,
         kwargs={"autocommit": True, "prepare_threshold": 0},
     ) as pool:
         try:

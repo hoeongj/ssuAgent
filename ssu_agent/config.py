@@ -33,3 +33,6 @@ AGENT_RATE_LIMIT: str = os.getenv("AGENT_RATE_LIMIT", "30/minute").strip()
 
 # Max characters accepted in a single agent message (oversized-payload guard).
 AGENT_MAX_MESSAGE_CHARS: int = int(os.getenv("AGENT_MAX_MESSAGE_CHARS", "8000"))
+
+# psycopg AsyncConnectionPool ceiling for LangGraph checkpointer traffic.
+AGENT_PG_POOL_MAX_SIZE: int = int(os.getenv("AGENT_PG_POOL_MAX_SIZE", "5"))
