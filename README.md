@@ -4,6 +4,8 @@
 
 > 🇺🇸 English version: [README.en.md](README.en.md)
 
+> 🧩 **숭실대 캠퍼스 AI 플랫폼** (4-서비스 중 하나) · [ssuMCP](https://github.com/ghdtjdwn/ssuMCP) · [ssuAI](https://github.com/ghdtjdwn/ssuAI) · **ssuAgent** · [ssu-ai-service](https://github.com/ghdtjdwn/ssu-ai-service) · 🟢 [Live](https://ssuai.vercel.app)
+
 숭실대학교 MCP 서버([ssuMCP](https://github.com/ghdtjdwn/ssuMCP))에 연결하는 LangGraph 기반 **멀티에이전트** 캠퍼스 AI 에이전트. [ssuAI](https://github.com/ghdtjdwn/ssuAI) 웹 채팅 UI에 SSE 스트리밍으로 연동된다.
 
 🟢 **Live** — 챗봇에서 바로 사용: <https://ssuai.vercel.app/chat> (이 에이전트가 SSE로 응답)

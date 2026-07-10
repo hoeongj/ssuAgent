@@ -4,6 +4,8 @@
 
 **한국어** [README.md](README.md) · **English** (this document)
 
+> 🧩 **Soongsil Campus AI Platform** (1 of 4 services) · [ssuMCP](https://github.com/ghdtjdwn/ssuMCP) · [ssuAI](https://github.com/ghdtjdwn/ssuAI) · **ssuAgent** · [ssu-ai-service](https://github.com/ghdtjdwn/ssu-ai-service) · 🟢 [Live](https://ssuai.vercel.app)
+
 A LangGraph-based **multi-agent** campus AI agent for Soongsil University that connects to the university's MCP server ([ssuMCP](https://github.com/ghdtjdwn/ssuMCP)). It integrates with the [ssuAI](https://github.com/ghdtjdwn/ssuAI) web chat UI via SSE streaming.
 
 🟢 **Live** — try it in the chat: <https://ssuai.vercel.app/chat> (this agent answers over SSE)
