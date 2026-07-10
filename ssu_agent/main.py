@@ -398,6 +398,38 @@ def _extract_interrupt(chunk: object) -> dict | None:
     return None
 
 
+_CAPACITY_SIGNALS = (
+    "exhausted",
+    "rate limit",
+    "rate-limit",
+    "ratelimit",
+    "429",
+    "quota",
+    "resource_exhausted",
+    "too many requests",
+)
+
+
+def _is_capacity_error(exc: BaseException) -> bool:
+    """True if the failure is an upstream LLM capacity / rate-limit / quota exhaustion (429).
+
+    Walks the exception chain so a RateLimitError wrapped in a
+    RuntimeError("All LLM providers exhausted") is still detected. Only class
+    names and message text are inspected — nothing is surfaced to the client.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        name = type(current).__name__.lower()
+        if "ratelimit" in name or getattr(current, "status_code", None) == 429:
+            return True
+        if any(sig in str(current).lower() for sig in _CAPACITY_SIGNALS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 async def _stream_graph(input_data: dict | object, config: dict):
     """Yield SSE strings from graph.astream_events."""
     try:
@@ -440,13 +472,19 @@ async def _stream_graph(input_data: dict | object, config: dict):
                     yield _sse({"type": "interrupt", "data": interrupt_data})
                     return  # Pause SSE; client waits for /agent/resume
 
-    except Exception:
+    except Exception as exc:
         # Do not reflect the exception detail to the client — it can carry
         # internal stack / DB context. The full traceback is logged server-side.
         logger.exception("agent stream failed")
-        yield _sse(
-            {"type": "error", "message": "처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."}
-        )
+        # Free-tier LLM providers are frequently rate-limited/quota-exhausted (429). Surface a
+        # clear, honest message for that case instead of a generic "error" so users (and portfolio
+        # viewers) understand it is a capacity limit, not a crash. Message is still a fixed string —
+        # no exception detail is leaked.
+        if _is_capacity_error(exc):
+            message = "지금 무료 AI 사용량이 잠시 초과됐어요. 잠시 후 다시 시도해 주세요."
+        else:
+            message = "처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
+        yield _sse({"type": "error", "message": message})
         return
 
     yield _sse({"type": "done"})
