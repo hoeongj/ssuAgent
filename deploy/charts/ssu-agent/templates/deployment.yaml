@@ -26,6 +26,9 @@ spec:
         app.kubernetes.io/part-of: ssuai
     spec:
       terminationGracePeriodSeconds: {{ .Values.podSecurityContext.terminationGracePeriodSeconds }}
+      securityContext:
+        seccompProfile:
+          {{- toYaml .Values.podSecurityContext.seccompProfile | nindent 10 }}
       containers:
         - name: agent
           image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}

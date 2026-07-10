@@ -63,3 +63,5 @@ containerSecurityContext:
     - ALL
 podSecurityContext:
   terminationGracePeriodSeconds: 30
+  seccompProfile:
+    type: RuntimeDefault
