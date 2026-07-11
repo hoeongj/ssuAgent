@@ -596,12 +596,14 @@ async def _stream_graph(input_data: dict | object, config: dict):
         # Do not reflect the exception detail to the client — it can carry
         # internal stack / DB context. The full traceback is logged server-side.
         logger.exception("agent stream failed")
-        # Free-tier LLM providers are frequently rate-limited/quota-exhausted (429). Surface a
-        # clear, honest message for that case instead of a generic "error" so users (and portfolio
-        # viewers) understand it is a capacity limit, not a crash. Message is still a fixed string —
-        # no exception detail is leaked.
+        # LLM providers (free-tier or the optional paid Anthropic key, ADR 0015) are
+        # frequently rate-limited/quota-exhausted (429). Surface a clear, honest message
+        # for that case instead of a generic "error" so users (and portfolio viewers)
+        # understand it is a capacity limit, not a crash. Message deliberately does not
+        # say "무료" (free) — it must stay accurate whichever provider tier is active.
+        # Message is still a fixed string — no exception detail is leaked.
         if _is_capacity_error(exc):
-            message = "지금 무료 AI 사용량이 잠시 초과됐어요. 잠시 후 다시 시도해 주세요."
+            message = "지금 AI 요청이 많아 잠시 처리가 어려워요. 잠시 후 다시 시도해 주세요."
         else:
             message = "처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
         yield _sse({"type": "error", "message": message})

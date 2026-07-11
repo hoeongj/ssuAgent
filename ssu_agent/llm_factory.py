@@ -38,7 +38,11 @@ def get_llm_sequence() -> list[BaseChatModel]:
                 model=config.ANTHROPIC_MODEL,
                 api_key=config.ANTHROPIC_API_KEY,
                 max_tokens=2048,
-                max_retries=1,
+                # The low-tier paid key 429s under normal prod load; the SDK
+                # honors Retry-After between retries, so a few retries here
+                # ride out a transient rate limit instead of immediately
+                # falling through to the free provider chain.
+                max_retries=3,
             )
         )
 
