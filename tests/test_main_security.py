@@ -142,6 +142,49 @@ def test_health_open(client: TestClient):
     assert resp.json()["status"] == "UP"
 
 
+def test_deep_health_reports_mcp_up(monkeypatch: pytest.MonkeyPatch, client: TestClient):
+    class FakeMCPClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def get_tools(self):
+            self.calls += 1
+            return []
+
+    fake_mcp_client = FakeMCPClient()
+    captured: dict[str, float | None] = {}
+
+    def fake_create_mcp_client(*, timeout_seconds: float | None = None):
+        captured["timeout_seconds"] = timeout_seconds
+        return fake_mcp_client
+
+    monkeypatch.setattr(main, "create_mcp_client", fake_create_mcp_client)
+
+    resp = client.get("/healthz/deep")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "UP", "mcp": "UP"}
+    assert fake_mcp_client.calls == 1
+    assert captured["timeout_seconds"] == main._DEEP_HEALTH_MCP_TIMEOUT_SECONDS
+
+
+def test_deep_health_reports_mcp_down(monkeypatch: pytest.MonkeyPatch, client: TestClient):
+    class FailingMCPClient:
+        async def get_tools(self):
+            raise RuntimeError("ssuMCP unavailable")
+
+    monkeypatch.setattr(
+        main,
+        "create_mcp_client",
+        lambda *, timeout_seconds=None: FailingMCPClient(),
+    )
+
+    resp = client.get("/healthz/deep")
+
+    assert resp.status_code == 503
+    assert resp.json() == {"status": "DEGRADED", "mcp": "DOWN"}
+
+
 def test_agent_request_models_default_and_accept_library_connected():
     assert main.AgentRequest(message="hi").library_connected is False
     assert main.AgentRequest(message="hi", library_connected=True).library_connected is True

@@ -254,11 +254,11 @@ async def build_supervisor_graph(
         lifespan handler and kept alive for the app's lifetime. If the pool
         closes, HITL resume fails because the checkpoint can't be read.
     """
-    from ssu_agent.mcp_client import create_mcp_client
+    from ssu_agent.mcp_client import create_mcp_client, wrap_mcp_tools_for_retry
 
     if all_tools is None:
         client = create_mcp_client()
-        all_tools = await client.get_tools()
+        all_tools = wrap_mcp_tools_for_retry(await client.get_tools())
 
     if checkpointer is None:
         from langgraph.checkpoint.memory import MemorySaver

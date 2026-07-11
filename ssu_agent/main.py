@@ -62,6 +62,7 @@ Streaming optimisation:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -71,7 +72,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
@@ -81,6 +82,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from ssu_agent import config
+from ssu_agent.mcp_client import create_mcp_client
 from ssu_agent.supervisor.graph import build_supervisor_graph
 
 # uvicorn does not attach a handler to the root logger, so ssu_agent's INFO-level
@@ -119,6 +121,7 @@ limiter = Limiter(key_func=_client_ip)
 # Graph and pool references — set during lifespan startup
 _graph = None
 _pool: AsyncConnectionPool | None = None
+_DEEP_HEALTH_MCP_TIMEOUT_SECONDS = 2.0
 
 _THREAD_OWNER_FORBIDDEN_DETAIL = "이 대화는 현재 세션의 소유가 아닙니다."
 
@@ -673,3 +676,20 @@ async def resume_agent(request: Request, req: ResumeRequest):
 @app.get("/health")
 async def health():
     return {"status": "UP", "version": app.version}
+
+
+@app.get("/healthz/deep")
+async def deep_health():
+    try:
+        client = create_mcp_client(timeout_seconds=_DEEP_HEALTH_MCP_TIMEOUT_SECONDS)
+        await asyncio.wait_for(
+            client.get_tools(),
+            timeout=_DEEP_HEALTH_MCP_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        logger.warning("deep health MCP check failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "DEGRADED", "mcp": "DOWN"},
+        )
+    return {"status": "UP", "mcp": "UP"}
