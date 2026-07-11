@@ -171,6 +171,23 @@ def inner_react_tools(library_tools: list[BaseTool]) -> list[BaseTool]:
     return [t for t in library_tools if t.name not in _CONFIRM_TOOL_NAMES]
 
 
+def _pending_action_id(value: object) -> int | None:
+    """Return the actionId when it denotes a real PENDING action, else None.
+
+    ssuMCP's prepare_* tools return actionId=0 as an explicit NO-OP sentinel —
+    LibraryPrepareResult(0L, message) — in three cases: reserve while already
+    holding a seat ("이미 ... 예약 중입니다"), cancel with nothing reserved, and
+    swap with nothing reserved (LibraryReservationMcpTool / LibraryCancelMcpTool
+    / LibrarySwapMcpTool). No pending action exists then, so an approval card
+    must NOT fire; the tool's message is guidance the LLM should relay instead.
+    Only a positive int identifies a pending action. bool is rejected explicitly
+    because it is an int subclass (True == 1 would otherwise pass).
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value > 0 else None
+
+
 def _extract_action_id(messages: list) -> dict | None:
     """Scan recent ToolMessages for an actionId from a prepare_* call.
 
@@ -189,8 +206,10 @@ def _extract_action_id(messages: list) -> dict | None:
                 data = json.loads(content) if isinstance(content, str) else content
                 if isinstance(data, dict) and "data" in data:
                     inner = data["data"]
-                    if isinstance(inner, dict) and "actionId" in inner:
-                        return {"action_id": inner["actionId"], "details": inner}
+                    if isinstance(inner, dict):
+                        action_id = _pending_action_id(inner.get("actionId"))
+                        if action_id is not None:
+                            return {"action_id": action_id, "details": inner}
             except (json.JSONDecodeError, TypeError):
                 pass
     return None
@@ -230,6 +249,17 @@ _CONFIRM_NON_EXECUTED_MARKERS = (
     "확정 대기 중인 액션이 여러 개입니다",
     "지정한 action_id에 해당하는 대기 액션이 없습니다",
     "액션이 만료됐습니다",
+    "지원하지 않는 대기 액션",
+)
+
+_CONFIRM_ASYNC_ACCEPT_MARKERS = (
+    # Reserve confirms are ACCEPTED asynchronously (ConfirmActionMcpTool
+    # acceptedReservationResponse, ADR 0086/C1): "예약 요청을 접수했습니다.
+    # intentId=N. ... get_library_wait_status로 최종 결과를 확인하세요." The async
+    # worker can still fail (seat taken, upstream timeout), so this must never
+    # be reported as "예약 확정 완료" — relay the backend's own accept text.
+    "접수했습니다",
+    "intentId=",
 )
 
 
@@ -240,9 +270,15 @@ def _confirm_result_message(raw_result: object) -> str:
     ConfirmActionMcpTool / McpPrivateToolResponse.ok) — including its no-op
     notices ("대기 중인 액션이 없습니다.", "확정 대기 중인 액션이 여러 개입니다...").
     So status == "OK" alone can't tell an executed confirm from a no-op one;
-    only `data`'s wording can. Treat the confirm as executed unless `data`
-    matches one of the backend's known no-target notices, and always surface
-    the backend's own text — never claim "예약 확정 완료" when nothing ran.
+    only `data`'s wording can. Three tiers:
+    - known no-op notice   -> relay it verbatim (nothing executed);
+    - async accept (reserve) -> relay verbatim, never claim 확정 완료 — the
+      intent worker may still fail; the backend text already tells the user
+      how to check the final result;
+    - anything else        -> synchronous completion (cancel/swap), safe to
+      label "예약 확정 완료".
+    Non-OK statuses (e.g. AUTH_REQUIRED raced in between prepare and confirm)
+    surface the response's own userMessage when present instead of raw JSON.
     """
     text = tool_result_to_text(raw_result)
     try:
@@ -251,11 +287,23 @@ def _confirm_result_message(raw_result: object) -> str:
         return f"확정 처리 결과를 확인하지 못했어요: {text}"
 
     if not isinstance(parsed, dict) or parsed.get("status") != "OK":
+        # McpPrivateToolResponse carries a user-facing `userMessage` (and a
+        # `loginUrl` on AUTH_REQUIRED, already embedded in userMessage's text).
+        # Prefer it over dumping serialized JSON at the user.
+        if isinstance(parsed, dict):
+            user_message = parsed.get("userMessage")
+            if isinstance(user_message, str) and user_message:
+                login_url = parsed.get("loginUrl")
+                if isinstance(login_url, str) and login_url and login_url not in user_message:
+                    return f"{user_message}\n로그인: {login_url}"
+                return user_message
         return f"확정 처리에 실패했어요: {text}"
 
     data = parsed.get("data")
     if isinstance(data, str):
         if any(marker in data for marker in _CONFIRM_NON_EXECUTED_MARKERS):
+            return data
+        if any(marker in data for marker in _CONFIRM_ASYNC_ACCEPT_MARKERS):
             return data
         return f"예약 확정 완료: {data}"
     return f"예약 확정 완료: {text}"
@@ -351,15 +399,17 @@ def build_library_agent(
                                 "active_agent": None,
                             }
 
-                        # If prepare_* returned an actionId let HITL router take over
+                        # If prepare_* returned a real pending actionId let the HITL
+                        # router take over. actionId=0 is ssuMCP's no-op sentinel
+                        # (see _pending_action_id) — its ToolMessage stays in
+                        # history so the LLM relays the guidance message instead.
                         if tc["name"] in _PREPARE_TOOL_NAMES:
                             try:
                                 data = json.loads(content)
                                 if (
                                     isinstance(data, dict)
-                                    and "data" in data
-                                    and isinstance(data["data"], dict)
-                                    and "actionId" in data["data"]
+                                    and isinstance(data.get("data"), dict)
+                                    and _pending_action_id(data["data"].get("actionId")) is not None
                                 ):
                                     hitl_triggered = True
                             except (json.JSONDecodeError, TypeError):

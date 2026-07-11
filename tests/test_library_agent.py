@@ -91,6 +91,39 @@ def test_extract_action_id_handles_malformed_json():
     assert _extract_action_id(msgs) is None
 
 
+def test_extract_action_id_ignores_zero_noop_sentinel():
+    """ssuMCP prepare_* returns actionId=0 (LibraryPrepareResult(0L, msg)) as an
+    explicit no-op sentinel — already holding a seat / nothing to cancel or swap.
+    No pending action exists, so the approval gate must NOT fire."""
+    msgs = [
+        ToolMessage(
+            content=json.dumps(
+                {
+                    "status": "OK",
+                    "data": {
+                        "actionId": 0,
+                        "message": "이미 3층 12번 좌석 예약 중입니다 (예약번호: 7). "
+                        "자리를 바꾸려면 prepare_swap_library_seat를 사용하세요.",
+                    },
+                }
+            ),
+            tool_call_id="tc-1",
+        ),
+    ]
+    assert _extract_action_id(msgs) is None
+
+
+def test_extract_action_id_rejects_non_int_and_bool_action_ids():
+    for bad_action_id in (True, "99", 99.0, None, -1):
+        msgs = [
+            ToolMessage(
+                content=json.dumps({"status": "OK", "data": {"actionId": bad_action_id}}),
+                tool_call_id="tc-1",
+            ),
+        ]
+        assert _extract_action_id(msgs) is None, f"actionId={bad_action_id!r} must not gate"
+
+
 # ── Unit: library graph builds ────────────────────────────────────────────────
 
 
@@ -505,6 +538,65 @@ async def test_library_agent_interrupt_on_real_mcp_content_block_shape():
     assert interrupt_val["details"]["seatLabel"] == "B-007"
 
 
+@pytest.mark.asyncio
+async def test_library_agent_no_interrupt_on_zero_noop_sentinel():
+    """actionId=0 (ssuMCP's no-op sentinel: already holding a seat) must NOT open
+    an approval card; the guidance message stays in history for the LLM to relay."""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    already_msg = (
+        "이미 3층 12번 좌석 예약 중입니다 (예약번호: 7, 이용시간: 10:00~14:00). "
+        "자리를 바꾸려면 prepare_swap_library_seat를 사용하세요."
+    )
+
+    @tool
+    def prepare_reserve_library_seat(mcp_session_id: str, seat_id: int) -> str:
+        """예약 준비"""
+        return json.dumps(
+            {"status": "OK", "data": {"actionId": 0, "message": already_msg}},
+            ensure_ascii=False,
+        )
+
+    relayed = "이미 3층 12번 좌석을 예약 중이세요. 자리를 바꾸시려면 말씀해 주세요."
+    llm = _MockLibraryLLM(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-1",
+                        "name": "prepare_reserve_library_seat",
+                        "args": {"mcp_session_id": "sess-001", "seat_id": 12},
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content=relayed),
+        ]
+    )
+    graph = build_library_agent([prepare_reserve_library_seat], llm=llm).compile(
+        checkpointer=MemorySaver()
+    )
+    initial: SsuAgentState = {
+        "messages": [HumanMessage(content="12번 좌석 예약해줘")],
+        "mcp_session_id": "sess-001",
+        "library_connected": True,
+        "active_agent": "library",
+    }
+
+    result = await graph.ainvoke(
+        initial, config={"configurable": {"thread_id": "lib-zero-sentinel"}}
+    )
+
+    assert "__interrupt__" not in result, "actionId=0 sentinel must not fire HITL"
+    # The sentinel's ToolMessage stays in history so the LLM sees the guidance...
+    tool_contents = [m.content for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert any(already_msg in c for c in tool_contents)
+    # ...and its relayed answer is the final message (graph ran through done).
+    assert result["messages"][-1].content == relayed
+    assert result["active_agent"] is None
+
+
 # ── check_approval_node: action id passed to confirm, honest result message ──
 
 
@@ -549,7 +641,10 @@ async def test_check_approval_confirm_called_with_action_id():
 
     assert confirm_calls == [{"mcp_session_id": "sess-100", "action_id": 100}]
     final = result["messages"][-1].content
-    assert "예약 확정 완료" in final
+    # Reserve confirms are accepted ASYNC (intent queue) — the worker can still
+    # fail, so the message must relay the backend accept text, not claim 확정 완료.
+    assert "예약 확정 완료" not in final
+    assert "접수했습니다" in final
     assert "intentId=555" in final
 
 
@@ -603,11 +698,24 @@ async def test_check_approval_non_executed_result_not_reported_as_complete():
 # ── Unit: _confirm_result_message ─────────────────────────────────────────────
 
 
-def test_confirm_result_message_success():
-    result = json.dumps({"status": "OK", "data": "예약 요청을 접수했습니다. intentId=1."})
-    assert (
-        _confirm_result_message(result) == "예약 확정 완료: 예약 요청을 접수했습니다. intentId=1."
+def test_confirm_result_message_synchronous_completion():
+    # Cancel/swap execute synchronously — their completion texts keep the label.
+    result = json.dumps({"status": "OK", "data": "예약 번호 123 좌석 반납 완료."})
+    assert _confirm_result_message(result) == "예약 확정 완료: 예약 번호 123 좌석 반납 완료."
+
+
+def test_confirm_result_message_async_accept_not_labeled_complete():
+    """Reserve confirms return an accepted-async notice (intent queue, ADR 0086) —
+    the worker can still fail, so the message must never claim 확정 완료."""
+    accepted = (
+        "예약 요청을 접수했습니다. intentId=7. 보통 수 초 내 처리됩니다. "
+        "같은 mcp_session_id로 get_library_wait_status(intent_id=7)를 호출해 "
+        "최종 결과를 확인하세요."
     )
+    result = json.dumps({"status": "OK", "data": accepted})
+    msg = _confirm_result_message(result)
+    assert msg == accepted
+    assert "예약 확정 완료" not in msg
 
 
 def test_confirm_result_message_no_pending_action():
@@ -627,12 +735,45 @@ def test_confirm_result_message_ambiguous():
 
 
 def test_confirm_result_message_unwraps_content_block_list():
-    payload = json.dumps({"status": "OK", "data": "예약 요청을 접수했습니다."})
+    payload = json.dumps({"status": "OK", "data": "예약 번호 9 좌석 반납 완료."})
     result = [{"type": "text", "text": payload}]
-    assert _confirm_result_message(result) == "예약 확정 완료: 예약 요청을 접수했습니다."
+    assert _confirm_result_message(result) == "예약 확정 완료: 예약 번호 9 좌석 반납 완료."
 
 
-def test_confirm_result_message_non_ok_status():
+def test_confirm_result_message_non_ok_status_without_user_message():
     result = json.dumps({"status": "AUTH_REQUIRED", "loginUrl": "https://example.com"})
     msg = _confirm_result_message(result)
     assert "확정 처리에 실패했어요" in msg
+
+
+def test_confirm_result_message_non_ok_surfaces_user_message():
+    """AUTH_REQUIRED raced in between prepare and confirm: relay the response's
+    userMessage (which already embeds the loginUrl) instead of raw JSON."""
+    user_message = (
+        "로그인이 필요해요. 아래 링크를 브라우저에서 열어 로그인한 뒤 같은 요청을 "
+        "다시 해주세요: https://example.com/login"
+    )
+    result = json.dumps(
+        {
+            "status": "AUTH_REQUIRED",
+            "loginUrl": "https://example.com/login",
+            "userMessage": user_message,
+            "developerMessage": "AUTHENTICATION REQUIRED. ...",
+        }
+    )
+    msg = _confirm_result_message(result)
+    assert msg == user_message
+    assert "developerMessage" not in msg
+
+
+def test_confirm_result_message_non_ok_appends_login_url_when_missing():
+    result = json.dumps(
+        {
+            "status": "INVALID_SESSION",
+            "loginUrl": "https://example.com/login",
+            "userMessage": "세션이 만료됐거나 찾을 수 없어요. 다시 로그인해 주세요.",
+        }
+    )
+    msg = _confirm_result_message(result)
+    assert msg.startswith("세션이 만료됐거나 찾을 수 없어요.")
+    assert "로그인: https://example.com/login" in msg
