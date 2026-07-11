@@ -8,6 +8,8 @@ GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "").strip()
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
 OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "").strip()
+ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "").strip()
+ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5").strip()
 DATABASE_URL: str = os.getenv(
     "DATABASE_URL",
     "postgresql://ssuai:dev@localhost:5432/ssuai",

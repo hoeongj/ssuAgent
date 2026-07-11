@@ -15,6 +15,7 @@ from ssu_agent import config, llm_factory
 
 
 def _clear_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "")
     monkeypatch.setattr(config, "GROQ_API_KEY", "")
     monkeypatch.setattr(config, "GOOGLE_API_KEY", "")
     monkeypatch.setattr(config, "OPENROUTER_API_KEY", "")
@@ -45,7 +46,7 @@ def test_only_gemini_key_yields_gemini_model(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_gemini_not_added_without_key(monkeypatch: pytest.MonkeyPatch):
-    """Only Groq configured → sequence has exactly the Groq client, no Gemini."""
+    """Only Groq configured → sequence has exactly the Groq client."""
     from langchain_groq import ChatGroq
 
     _clear_keys(monkeypatch)
@@ -54,6 +55,20 @@ def test_gemini_not_added_without_key(monkeypatch: pytest.MonkeyPatch):
     sequence = llm_factory.get_llm_sequence()
     assert len(sequence) == 1
     assert isinstance(sequence[0], ChatGroq)
+
+
+def test_anthropic_key_prepends_claude_before_groq(monkeypatch: pytest.MonkeyPatch):
+    from langchain_anthropic import ChatAnthropic
+    from langchain_groq import ChatGroq
+
+    _clear_keys(monkeypatch)
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setattr(config, "ANTHROPIC_MODEL", "claude-haiku-4-5")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-groq-key")
+
+    sequence = llm_factory.get_llm_sequence()
+    assert [type(llm) for llm in sequence] == [ChatAnthropic, ChatGroq]
+    assert hasattr(sequence[0], "bind_tools")
 
 
 def test_all_keys_yield_groq_gemini_openrouter_in_order(monkeypatch: pytest.MonkeyPatch):

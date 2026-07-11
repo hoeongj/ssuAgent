@@ -1,7 +1,10 @@
 """
 LLM factory with multi-provider fallback.
 
-Provider priority (Groq first — higher free-tier quota):
+Provider priority:
+  0. Anthropic Claude Haiku 4.5 — used first when ANTHROPIC_API_KEY is set
+     (paid; temporary dev/testing). Falls back to the free providers below on
+     error or when the key is unset.
   1. Groq Llama-3.3-70b  — 14,400 req/day free, very fast
   2. Google Gemini        — 20 req/day free tier, high quality
   3. OpenRouter           — catch-all aggregator, many free models
@@ -26,6 +29,18 @@ from ssu_agent import config
 def get_llm_sequence() -> list[BaseChatModel]:
     """Return LLMs in priority order for per-request fallback loops."""
     llms: list[BaseChatModel] = []
+
+    if config.ANTHROPIC_API_KEY:
+        from langchain_anthropic import ChatAnthropic
+
+        llms.append(
+            ChatAnthropic(
+                model=config.ANTHROPIC_MODEL,
+                api_key=config.ANTHROPIC_API_KEY,
+                max_tokens=2048,
+                max_retries=1,
+            )
+        )
 
     if config.GROQ_API_KEY:
         from langchain_groq import ChatGroq
