@@ -56,6 +56,7 @@ import logging
 import re
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, START, StateGraph
@@ -280,9 +281,20 @@ async def build_supervisor_graph(
 
     async def supervisor_node(state: SsuAgentState, config: RunnableConfig) -> dict:
         last_exc: Exception | None = None
+        config = config or {}
+        supervisor_config = {
+            **config,
+            "tags": [*(config.get("tags") or []), "supervisor_llm"],
+        }
+        input_message_count = len(state["messages"])
         for idx, react in enumerate(supervisor_reacts):
             try:
-                result = await react.ainvoke({"messages": state["messages"]}, config=config)
+                result = await react.ainvoke(
+                    {"messages": state["messages"]}, config=supervisor_config
+                )
+                for msg in result["messages"][input_message_count:]:
+                    if isinstance(msg, AIMessage):
+                        msg.name = "supervisor"
                 return {"messages": result["messages"]}
             except Exception as exc:
                 # Same rationale as react_loop: surface WHY each provider failed

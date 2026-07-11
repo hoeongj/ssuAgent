@@ -54,7 +54,7 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
 from langgraph.types import interrupt
 
-from ssu_agent.agents.react_loop import drop_routing_messages
+from ssu_agent.agents.react_loop import apply_empty_response_fallback, drop_routing_messages
 from ssu_agent.llm_factory import create_llm, get_llm_sequence
 from ssu_agent.supervisor.state import SsuAgentState
 
@@ -253,6 +253,7 @@ def build_library_agent(
                     if hitl_triggered:
                         break
 
+                apply_empty_response_fallback(history[len(input_messages) :])
                 return {"messages": history[len(input_messages) :]}
             except Exception as exc:
                 last_exc = exc

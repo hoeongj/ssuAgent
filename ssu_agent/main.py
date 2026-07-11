@@ -497,13 +497,14 @@ async def _stream_graph(input_data: dict | object, config: dict):
     # NOT reach the user — the sub-agent's answer is the real response. Dropped on a
     # transfer_to_*; flushed only if the supervisor answered directly (no routing).
     supervisor_buf = ""
+    supervisor_routed = False
     try:
         async for event in _graph.astream_events(input_data, config=config, version="v2"):
             etype = event.get("event", "")
             name = event.get("name", "")
 
             if etype == "on_chat_model_stream":
-                node = event.get("metadata", {}).get("langgraph_node", "")
+                tags = event.get("tags") or []
                 chunk = event["data"]["chunk"]
                 content = chunk.content if hasattr(chunk, "content") else str(chunk)
                 if isinstance(content, list):
@@ -512,8 +513,9 @@ async def _stream_graph(input_data: dict | object, config: dict):
                         for item in content
                     )
                 if content:
-                    if node == "supervisor":
-                        supervisor_buf += content  # hold; may be routing narration
+                    if "supervisor_llm" in tags:
+                        if not supervisor_routed:
+                            supervisor_buf += content  # hold; may be routing narration
                     else:
                         cleaned = stripper.feed(content)
                         if cleaned:
@@ -521,6 +523,7 @@ async def _stream_graph(input_data: dict | object, config: dict):
 
             elif etype == "on_tool_start":
                 if name.startswith("transfer_to_"):
+                    supervisor_routed = True
                     supervisor_buf = ""  # drop the supervisor's hand-off narration
                     agent = name.replace("transfer_to_", "").replace("_agent", "")
                     yield _sse(
@@ -563,9 +566,8 @@ async def _stream_graph(input_data: dict | object, config: dict):
         yield _sse({"type": "error", "message": message})
         return
 
-    # Supervisor answered directly (no routing) or summarised after a sub-agent:
-    # flush the held text as the real answer.
-    if supervisor_buf:
+    # Supervisor answered directly (no routing): flush the held text as the real answer.
+    if supervisor_buf and not supervisor_routed:
         cleaned = stripper.feed(supervisor_buf)
         if cleaned:
             yield _sse({"type": "text", "content": cleaned})

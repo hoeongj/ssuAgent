@@ -12,10 +12,15 @@ import time
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from ssu_agent.agents.react_loop import _MAX_TOOL_TURNS, run_react_loop
+from ssu_agent.agents.react_loop import (
+    _MAX_TOOL_TURNS,
+    EMPTY_RESPONSE_FALLBACK,
+    drop_routing_messages,
+    run_react_loop,
+)
 from ssu_agent.supervisor.state import SsuAgentState
 
 
@@ -32,6 +37,33 @@ def _state() -> SsuAgentState:
         "mcp_session_id": None,
         "active_agent": "x",
     }
+
+
+def test_drop_routing_messages_removes_supervisor_ai_message():
+    messages = [
+        HumanMessage(content="도서관 좌석 예약해줘"),
+        AIMessage(content="도서관 에이전트에게 전달했습니다.", name="supervisor"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": "route-1",
+                    "name": "transfer_to_library_agent",
+                    "args": {"query": "도서관 좌석 예약해줘"},
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(content="ROUTE_TO:library_agent", tool_call_id="route-1"),
+        AIMessage(content="[도서관 에이전트] 실제 답변"),
+    ]
+
+    cleaned = drop_routing_messages(messages)
+
+    assert [getattr(m, "content", "") for m in cleaned] == [
+        "도서관 좌석 예약해줘",
+        "[도서관 에이전트] 실제 답변",
+    ]
 
 
 @pytest.mark.asyncio
@@ -101,3 +133,21 @@ async def test_loop_is_bounded_by_max_tool_turns():
     assert calls["n"] == _MAX_TOOL_TURNS
     # No AIMessage carried content, so the loop returns the fallback tag.
     assert result["messages"][-1].content == "[테스트] 처리 완료"
+
+
+@pytest.mark.asyncio
+async def test_empty_final_content_uses_fallback():
+    llm = _SeqLLM(responses=[AIMessage(content=" \n ")])
+
+    result = await run_react_loop([llm], [], "시스템", "테스트", _state(), {})
+
+    assert result["messages"][-1].content == f"[테스트] {EMPTY_RESPONSE_FALLBACK}"
+
+
+@pytest.mark.asyncio
+async def test_non_empty_final_content_is_untouched():
+    llm = _SeqLLM(responses=[AIMessage(content="정상 답변입니다.")])
+
+    result = await run_react_loop([llm], [], "시스템", "테스트", _state(), {})
+
+    assert result["messages"][-1].content == "[테스트] 정상 답변입니다."

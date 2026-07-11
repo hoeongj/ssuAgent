@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 # (ssuAI app/api/agent/stream). 4 turns covers legitimate multi-tool answers
 # while stopping exploratory re-call storms that used to push latency past 60s.
 _MAX_TOOL_TURNS = 4
+EMPTY_RESPONSE_FALLBACK = "요청을 처리하지 못했어요. 다시 한 번 구체적으로 말씀해 주세요."
 
 
 def _provider_label(llm: BaseChatModel) -> str:
@@ -60,13 +61,15 @@ async def _run_tool_call(tc: dict, tools: list[BaseTool], config: RunnableConfig
 
 
 def drop_routing_messages(messages: list) -> list:
-    """Remove supervisor transfer_to_* tool calls and their ToolMessage results.
+    """Remove supervisor routing artifacts and narration from sub-agent context.
 
     When the supervisor routes to a sub-agent it leaves an AIMessage with a
     transfer_to_<agent> tool call + a ToolMessage("ROUTE_TO:<agent>") in the
     shared state. Groq llama-3.3-70b sees the trailing ToolMessage and produces a
-    text completion instead of calling the sub-agent's tools. Strip those routing
-    artifacts so the inner ReAct agent sees a clean user→ conversation.
+    text completion instead of calling the sub-agent's tools. Supervisor
+    narration is also stripped because it can make the sub-agent think the user
+    was already answered. Strip those artifacts so the inner ReAct agent sees a
+    clean user→ conversation.
     """
     routing_call_ids: set[str] = set()
     for msg in messages:
@@ -80,6 +83,8 @@ def drop_routing_messages(messages: list) -> list:
 
     result = []
     for msg in messages:
+        if isinstance(msg, AIMessage) and msg.name == "supervisor":
+            continue
         if (
             isinstance(msg, AIMessage)
             and msg.tool_calls
@@ -90,6 +95,31 @@ def drop_routing_messages(messages: list) -> list:
             continue
         result.append(msg)
     return result
+
+
+def _content_is_blank(content: object) -> bool:
+    if isinstance(content, str):
+        return not content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and "text" in item:
+                parts.append(str(item["text"]))
+            else:
+                parts.append(str(item))
+        return not "".join(parts).strip()
+    return not content
+
+
+def apply_empty_response_fallback(messages: list) -> None:
+    """Replace a blank final assistant answer without changing tool-call turns."""
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage):
+            if msg.tool_calls:
+                return
+            if _content_is_blank(msg.content):
+                msg.content = EMPTY_RESPONSE_FALLBACK
+            return
 
 
 async def run_react_loop(
@@ -149,11 +179,12 @@ async def run_react_loop(
                 )
                 history.extend(tool_messages)
 
+            apply_empty_response_fallback(history[len(input_messages) :])
             last_ai = next(
                 (
                     m
                     for m in reversed(history[len(input_messages) :])
-                    if isinstance(m, AIMessage) and m.content
+                    if isinstance(m, AIMessage) and not _content_is_blank(m.content)
                 ),
                 None,
             )
