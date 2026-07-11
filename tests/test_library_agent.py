@@ -18,6 +18,7 @@ from langchain_core.tools import tool
 
 from ssu_agent.agents.library import (
     _LIBRARY_RESERVATION_LOGIN_MESSAGE,
+    _LIBRARY_RESERVATION_SESSION_MESSAGE,
     _build_library_prompt,
     _extract_action_id,
     build_library_agent,
@@ -169,13 +170,36 @@ async def test_reservation_without_mcp_session_returns_login_without_llm():
     initial: SsuAgentState = {
         "messages": [HumanMessage(content="도서관 2층 예약해줘")],
         "mcp_session_id": None,
-        "library_connected": False,
+        "library_connected": True,
         "active_agent": "library",
     }
 
     result = await graph.ainvoke(
         initial,
         config={"configurable": {"thread_id": "preauth-no-session"}},
+    )
+
+    assert result["messages"][-1].content == _LIBRARY_RESERVATION_SESSION_MESSAGE
+    assert result["active_agent"] is None
+    assert llm.bind_tools_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_reservation_without_both_signals_returns_login_message():
+    from langgraph.checkpoint.memory import MemorySaver
+
+    llm = _SpyLibraryLLM(responses=[AIMessage(content="should not be used")])
+    graph = build_library_agent(LIBRARY_TOOLS, llm=llm).compile(checkpointer=MemorySaver())
+    initial: SsuAgentState = {
+        "messages": [HumanMessage(content="도서관 2층 예약해줘")],
+        "mcp_session_id": None,
+        "library_connected": False,
+        "active_agent": "library",
+    }
+
+    result = await graph.ainvoke(
+        initial,
+        config={"configurable": {"thread_id": "preauth-no-signals"}},
     )
 
     assert result["messages"][-1].content == _LIBRARY_RESERVATION_LOGIN_MESSAGE

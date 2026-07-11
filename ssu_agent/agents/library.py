@@ -86,6 +86,10 @@ CRITICAL RULES — MUST FOLLOW EXACTLY:
 _LIBRARY_RESERVATION_LOGIN_MESSAGE = (
     "도서관 좌석 예약에는 도서관 로그인이 필요해요. 사이드바의 도서관 탭에서 로그인해 주세요."
 )
+_LIBRARY_RESERVATION_SESSION_MESSAGE = (
+    "도서관 로그인은 확인했지만 채팅 세션에 아직 연결되지 않았어요. 잠시 후 다시 시도하거나 "
+    "페이지를 새로고침해 주세요. 계속 안 되면 도서관 탭에서 로그인 상태를 확인해 주세요."
+)
 _RESERVATION_INTENT_RE = re.compile(
     r"\breserv(?:e|ation)\b"
     r"|예약\s*(?:해|해주세요|해줘|해줘요|부탁|진행|시켜|할래|하고\s*싶|하고싶|좀|해주|잡아)"
@@ -221,11 +225,16 @@ def build_library_agent(
     async def agent_node(state: SsuAgentState, config: RunnableConfig) -> dict:
         mcp_session_id = state.get("mcp_session_id")
         messages = drop_routing_messages(state["messages"])
-        if _has_library_reservation_intent(_last_human_message_text(messages)) and (
-            not mcp_session_id or not state.get("library_connected")
-        ):
+        reservation_intent = _has_library_reservation_intent(_last_human_message_text(messages))
+        library_connected = bool(state.get("library_connected"))
+        if reservation_intent and not library_connected:
             return {
                 "messages": [AIMessage(content=_LIBRARY_RESERVATION_LOGIN_MESSAGE)],
+                "active_agent": None,
+            }
+        if reservation_intent and library_connected and not mcp_session_id:
+            return {
+                "messages": [AIMessage(content=_LIBRARY_RESERVATION_SESSION_MESSAGE)],
                 "active_agent": None,
             }
 
