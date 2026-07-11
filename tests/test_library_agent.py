@@ -164,3 +164,64 @@ async def test_library_agent_interrupt_on_prepare():
     interrupt_val = result["__interrupt__"][0].value
     assert interrupt_val["type"] == "library_reservation_approval"
     assert interrupt_val["action_id"] == 99
+
+
+# ── Integration: AUTH_REQUIRED deterministic guard ────────────────────────────
+
+
+@tool
+def prepare_reserve_needs_auth(mcp_session_id: str, seat_id: int) -> str:
+    """예약 준비 (returns AUTH_REQUIRED)"""
+    return json.dumps(
+        {
+            "status": "AUTH_REQUIRED",
+            "provider": "library",
+            "loginUrl": "https://ssumcp.duckdns.org/api/auth/library/start",
+            "data": None,
+        }
+    )
+
+
+class _AuthRequiredLLM(FakeMessagesListChatModel):
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+
+@pytest.mark.asyncio
+async def test_library_auth_required_returns_login_message_not_hallucination():
+    """When a reservation tool returns AUTH_REQUIRED, the agent must deterministically
+    return a 'log in first' message + loginUrl — NOT let the weak LLM hallucinate a
+    successful reservation ("예약되었습니다" with nothing actually reserved)."""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    llm = _AuthRequiredLLM(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-1",
+                        "name": "prepare_reserve_needs_auth",
+                        "args": {"mcp_session_id": "", "seat_id": 2},
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            # The model WOULD hallucinate success on its next turn — the guard fires first.
+            AIMessage(content="네, 도서관 2층 좌석이 예약되었습니다."),
+        ]
+    )
+    graph = build_library_agent([prepare_reserve_needs_auth], llm=llm).compile(
+        checkpointer=MemorySaver()
+    )
+    initial: SsuAgentState = {
+        "messages": [HumanMessage(content="도서관 2층 예약해줘")],
+        "mcp_session_id": None,
+        "active_agent": "library",
+    }
+    result = await graph.ainvoke(initial, config={"configurable": {"thread_id": "auth-req-1"}})
+
+    final = result["messages"][-1].content
+    assert "도서관 로그인" in final  # deterministic login nudge
+    assert "예약되었습니다" not in final  # hallucination suppressed
+    assert "ssumcp.duckdns.org" in final  # loginUrl surfaced to the user

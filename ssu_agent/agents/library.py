@@ -136,6 +136,21 @@ def _extract_action_id(messages: list) -> dict | None:
     return None
 
 
+def _extract_login_url(content: str) -> str | None:
+    """Pull the loginUrl out of an AUTH_REQUIRED tool response (top-level or nested)."""
+    try:
+        data = json.loads(content) if isinstance(content, str) else content
+    except (json.JSONDecodeError, TypeError):
+        return None
+    scopes = [data, data.get("data") if isinstance(data, dict) else None]
+    for scope in scopes:
+        if isinstance(scope, dict):
+            url = scope.get("loginUrl") or scope.get("login_url")
+            if isinstance(url, str) and url:
+                return url
+    return None
+
+
 def _has_pending_action(state: SsuAgentState) -> Literal["check_approval", "done"]:
     """Router: check if the agent produced a prepare_* result needing approval."""
     return "check_approval" if _extract_action_id(state["messages"]) else "done"
@@ -203,6 +218,23 @@ def build_library_agent(
                             content = f"Tool error: {tool_exc}"
 
                         history.append(ToolMessage(content=content, tool_call_id=tc.get("id", "")))
+
+                        # Deterministic auth guard: if an auth-required tool reports
+                        # AUTH_REQUIRED, return a fixed login-needed message NOW and stop.
+                        # The weak free LLM otherwise ignores the result and hallucinates a
+                        # successful reservation ("예약되었습니다" with nothing reserved).
+                        if "AUTH_REQUIRED" in content:
+                            login_url = _extract_login_url(content)
+                            notice = (
+                                "좌석 예약·대출 같은 기능은 도서관 로그인(연결)이 필요해요. "
+                                "먼저 도서관에 로그인해 주세요."
+                            )
+                            if login_url:
+                                notice += f"\n로그인: {login_url}"
+                            return {
+                                "messages": [AIMessage(content=f"[도서관 에이전트] {notice}")],
+                                "active_agent": None,
+                            }
 
                         # If prepare_* returned an actionId let HITL router take over
                         if tc["name"] in _PREPARE_TOOL_NAMES:
