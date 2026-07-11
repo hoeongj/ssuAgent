@@ -517,10 +517,17 @@ async def _stream_graph(input_data: dict | object, config: dict):
                 chunk = event["data"]["chunk"]
                 content = chunk.content if hasattr(chunk, "content") else str(chunk)
                 if isinstance(content, list):
-                    content = "".join(
-                        item["text"] if isinstance(item, dict) and "text" in item else str(item)
-                        for item in content
-                    )
+                    parts: list[str] = []
+                    for item in content:
+                        if isinstance(item, str):
+                            parts.append(item)
+                        elif (
+                            isinstance(item, dict)
+                            and item.get("type") == "text"
+                            and isinstance(item.get("text"), str)
+                        ):
+                            parts.append(item["text"])
+                    content = "".join(parts)
                 if content:
                     chunk_id = getattr(chunk, "id", None)
                     if chunk_id:

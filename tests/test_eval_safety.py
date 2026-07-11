@@ -21,6 +21,8 @@ gate; the actual event-filter logic is only exercised here.)
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from langchain_core.messages import AIMessageChunk
 
@@ -130,6 +132,51 @@ async def test_answer_and_handoff_are_forwarded(_fake_graph) -> None:
     assert '"type": "handoff"' in out  # transfer_to_library_agent surfaced
     assert '"agent": "library"' in out  # derived name only, no args
     assert '"type": "done"' in out
+
+
+@pytest.mark.asyncio
+async def test_stream_skips_non_text_content_blocks(_fake_graph) -> None:
+    """Anthropic streams tool-use deltas as content blocks; text SSE must not."""
+    _fake_graph(
+        [
+            {
+                "event": "on_chat_model_stream",
+                "name": "supervisor",
+                "data": {
+                    "chunk": AIMessageChunk(
+                        content=[
+                            {"type": "text", "text": "안녕"},
+                            " 하세요",
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_x",
+                                "name": "get_library_available_seats",
+                                "input": {},
+                            },
+                            {
+                                "type": "input_json_delta",
+                                "partial_json": '{"a":',
+                            },
+                        ]
+                    )
+                },
+            }
+        ]
+    )
+
+    out = await _collect()
+    text_events = [
+        json.loads(sse[len("data: ") :].strip())["content"]
+        for sse in out.split("\n\n")
+        if sse.startswith("data: ") and '"type": "text"' in sse
+    ]
+    text = "".join(text_events)
+
+    assert text == "안녕 하세요"
+    assert "tool_use" not in out
+    assert "input_json_delta" not in out
+    assert "partial_json" not in out
+    assert "toolu_" not in out
 
 
 # ── Eval 2: exceptions do not leak internal detail ────────────────────────────
