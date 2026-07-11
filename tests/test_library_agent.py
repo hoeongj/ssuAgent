@@ -21,6 +21,7 @@ from ssu_agent.agents.library import (
     build_library_agent,
     inner_react_tools,
 )
+from ssu_agent.agents.react_loop import EMPTY_RESPONSE_FALLBACK
 from ssu_agent.supervisor.state import SsuAgentState
 
 # ── Mock tools ────────────────────────────────────────────────────────────────
@@ -225,3 +226,37 @@ async def test_library_auth_required_returns_login_message_not_hallucination():
     assert "도서관 로그인" in final  # deterministic login nudge
     assert "예약되었습니다" not in final  # hallucination suppressed
     assert "ssumcp.duckdns.org" in final  # loginUrl surfaced to the user
+
+
+@pytest.mark.asyncio
+async def test_library_empty_final_content_uses_fallback():
+    from langgraph.checkpoint.memory import MemorySaver
+
+    llm = _MockLibraryLLM(responses=[AIMessage(content=" \n ")])
+    graph = build_library_agent([], llm=llm).compile(checkpointer=MemorySaver())
+    state: SsuAgentState = {
+        "messages": [HumanMessage(content="도서관 좌석 알려줘")],
+        "mcp_session_id": None,
+        "active_agent": "library",
+    }
+
+    result = await graph.ainvoke(state, config={"configurable": {"thread_id": "lib-empty-1"}})
+
+    assert result["messages"][-1].content == EMPTY_RESPONSE_FALLBACK
+
+
+@pytest.mark.asyncio
+async def test_library_non_empty_final_content_is_untouched():
+    from langgraph.checkpoint.memory import MemorySaver
+
+    llm = _MockLibraryLLM(responses=[AIMessage(content="좌석 현황 답변입니다.")])
+    graph = build_library_agent([], llm=llm).compile(checkpointer=MemorySaver())
+    state: SsuAgentState = {
+        "messages": [HumanMessage(content="도서관 좌석 알려줘")],
+        "mcp_session_id": None,
+        "active_agent": "library",
+    }
+
+    result = await graph.ainvoke(state, config={"configurable": {"thread_id": "lib-non-empty-1"}})
+
+    assert result["messages"][-1].content == "좌석 현황 답변입니다."

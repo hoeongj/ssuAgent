@@ -224,6 +224,52 @@ async def test_graph_initial_state_has_mcp_session():
     assert result.get("mcp_session_id") == "session-abc"
 
 
+@pytest.mark.asyncio
+async def test_supervisor_labels_new_ai_messages_with_name():
+    """Supervisor-produced AI messages are labeled for downstream cleanup."""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    llm = _MockLLM(
+        responses=[
+            AIMessage(
+                content="도서관 에이전트에게 전달했습니다.",
+                tool_calls=[
+                    {
+                        "id": "route-1",
+                        "name": "transfer_to_library_agent",
+                        "args": {"query": "도서관 좌석 예약해줘"},
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="도서관 에이전트에게 전달했습니다."),
+            AIMessage(content="[도서관 에이전트] 도서관 로그인 후 이용할 수 있어요."),
+        ]
+    )
+    graph = await build_supervisor_graph(
+        all_tools=[],
+        llm=llm,
+        checkpointer=MemorySaver(),
+    )
+
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="도서관 좌석 예약해줘")],
+            "mcp_session_id": None,
+            "active_agent": None,
+        },
+        config={"configurable": {"thread_id": "supervisor-name-label"}},
+    )
+
+    supervisor_messages = [
+        msg
+        for msg in result["messages"]
+        if isinstance(msg, AIMessage) and msg.content == "도서관 에이전트에게 전달했습니다."
+    ]
+    assert supervisor_messages
+    assert all(msg.name == "supervisor" for msg in supervisor_messages)
+
+
 # ── Integration: routing markers ──────────────────────────────────────────────
 
 
