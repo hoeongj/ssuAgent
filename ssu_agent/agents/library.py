@@ -45,6 +45,7 @@ Why manual bind_tools loop instead of create_react_agent:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Literal
 
@@ -58,6 +59,9 @@ from langgraph.types import interrupt
 from ssu_agent.agents.react_loop import apply_empty_response_fallback, drop_routing_messages
 from ssu_agent.llm_factory import create_llm, get_llm_sequence
 from ssu_agent.supervisor.state import SsuAgentState
+from ssu_agent.tool_results import tool_result_to_text
+
+logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT_BASE = """당신은 숭실대학교 도서관 전문 AI 어시스턴트입니다.
 
@@ -168,11 +172,21 @@ def inner_react_tools(library_tools: list[BaseTool]) -> list[BaseTool]:
 
 
 def _extract_action_id(messages: list) -> dict | None:
-    """Scan recent ToolMessages for an actionId from a prepare_* call."""
+    """Scan recent ToolMessages for an actionId from a prepare_* call.
+
+    Defense in depth: msg.content built by older checkpoints may still carry a
+    raw MCP content-block list (see tool_results.tool_result_to_text) rather
+    than the unwrapped JSON string the agent_node fix now stores going forward.
+    Normalize a list through the same helper before parsing so replaying old
+    thread history does not silently miss the actionId.
+    """
     for msg in reversed(messages[-10:]):
         if isinstance(msg, ToolMessage):
+            content = msg.content
+            if isinstance(content, list):
+                content = tool_result_to_text(content)
             try:
-                data = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                data = json.loads(content) if isinstance(content, str) else content
                 if isinstance(data, dict) and "data" in data:
                     inner = data["data"]
                     if isinstance(inner, dict) and "actionId" in inner:
@@ -200,6 +214,51 @@ def _extract_login_url(content: str) -> str | None:
 def _has_pending_action(state: SsuAgentState) -> Literal["check_approval", "done"]:
     """Router: check if the agent produced a prepare_* result needing approval."""
     return "check_approval" if _extract_action_id(state["messages"]) else "done"
+
+
+def _provider_label(llm: BaseChatModel) -> str:
+    """Human-readable model id for provider-failure logging (mirrors react_loop)."""
+    return getattr(llm, "model_name", None) or getattr(llm, "model", None) or type(llm).__name__
+
+
+_CONFIRM_NON_EXECUTED_MARKERS = (
+    # ssuMCP's confirm_action always answers status=="OK" (McpPrivateToolResponse.ok),
+    # even when nothing actually ran — these are its exact no-op notice texts
+    # (ConfirmActionMcpTool), so `data` wording is the only signal that
+    # distinguishes an executed confirm from one that found no target action.
+    "대기 중인 액션이 없습니다",
+    "확정 대기 중인 액션이 여러 개입니다",
+    "지정한 action_id에 해당하는 대기 액션이 없습니다",
+    "액션이 만료됐습니다",
+)
+
+
+def _confirm_result_message(raw_result: object) -> str:
+    """Turn a confirm_action tool result into an honest user-facing message.
+
+    ssuMCP's confirm_action responds status=="OK" unconditionally (see
+    ConfirmActionMcpTool / McpPrivateToolResponse.ok) — including its no-op
+    notices ("대기 중인 액션이 없습니다.", "확정 대기 중인 액션이 여러 개입니다...").
+    So status == "OK" alone can't tell an executed confirm from a no-op one;
+    only `data`'s wording can. Treat the confirm as executed unless `data`
+    matches one of the backend's known no-target notices, and always surface
+    the backend's own text — never claim "예약 확정 완료" when nothing ran.
+    """
+    text = tool_result_to_text(raw_result)
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return f"확정 처리 결과를 확인하지 못했어요: {text}"
+
+    if not isinstance(parsed, dict) or parsed.get("status") != "OK":
+        return f"확정 처리에 실패했어요: {text}"
+
+    data = parsed.get("data")
+    if isinstance(data, str):
+        if any(marker in data for marker in _CONFIRM_NON_EXECUTED_MARKERS):
+            return data
+        return f"예약 확정 완료: {data}"
+    return f"예약 확정 완료: {text}"
 
 
 def build_library_agent(
@@ -243,6 +302,7 @@ def build_library_agent(
 
         last_exc: Exception | None = None
         for _llm in llm_seq:
+            provider = _provider_label(_llm)
             try:
                 llm_with_tools = _llm.bind_tools(agent_tools)
                 history = list(input_messages)
@@ -268,11 +328,7 @@ def build_library_agent(
 
                         try:
                             result = await matched.ainvoke(tc.get("args", {}), config=config)
-                            content = (
-                                result
-                                if isinstance(result, str)
-                                else json.dumps(result, ensure_ascii=False)
-                            )
+                            content = tool_result_to_text(result)
                         except Exception as tool_exc:
                             content = f"Tool error: {tool_exc}"
 
@@ -315,6 +371,13 @@ def build_library_agent(
                 apply_empty_response_fallback(history[len(input_messages) :])
                 return {"messages": history[len(input_messages) :]}
             except Exception as exc:
+                # Log every provider failure — this used to swallow all but the
+                # last exception (last_exc only), hiding WHY the earlier
+                # (preferred) providers failed when diagnosing quota/schema
+                # errors in prod. Mirrors react_loop.run_react_loop's logging.
+                logger.warning(
+                    "[library] provider=%s failed: %s: %s", provider, type(exc).__name__, exc
+                )
                 last_exc = exc
 
         raise last_exc or RuntimeError("All LLM providers exhausted")
@@ -336,8 +399,13 @@ def build_library_agent(
 
         if resume.get("approved") and confirm_tool is not None:
             mcp_session_id = state.get("mcp_session_id")
-            result = await confirm_tool.ainvoke({"mcp_session_id": mcp_session_id})
-            msg = AIMessage(content=f"[도서관 에이전트] 예약 확정 완료: {result}")
+            # action_id sourced from the server-extracted action (never the client
+            # resume payload) so the caller cannot point confirm_action at an
+            # action it did not just get approval for.
+            result = await confirm_tool.ainvoke(
+                {"mcp_session_id": mcp_session_id, "action_id": action["action_id"]}
+            )
+            msg = AIMessage(content=f"[도서관 에이전트] {_confirm_result_message(result)}")
         else:
             msg = AIMessage(content="[도서관 에이전트] 예약이 취소되었습니다.")
 

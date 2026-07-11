@@ -16,7 +16,6 @@ agent (see the library agent's module docstring for the A/B detail).
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 
@@ -26,6 +25,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 
 from ssu_agent.supervisor.state import SsuAgentState
+from ssu_agent.tool_results import tool_result_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ async def _run_tool_call(tc: dict, tools: list[BaseTool], config: RunnableConfig
     started = time.perf_counter()
     try:
         result = await matched.ainvoke(tc.get("args", {}), config=config)
-        content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+        content = tool_result_to_text(result)
     except Exception as tool_exc:
         content = f"Tool error: {tool_exc}"
     logger.info("tool %s finished in %.2fs", name, time.perf_counter() - started)

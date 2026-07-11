@@ -14,12 +14,14 @@ import json
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import tool
+from langchain_core.tools import StructuredTool, tool
+from pydantic import BaseModel
 
 from ssu_agent.agents.library import (
     _LIBRARY_RESERVATION_LOGIN_MESSAGE,
     _LIBRARY_RESERVATION_SESSION_MESSAGE,
     _build_library_prompt,
+    _confirm_result_message,
     _extract_action_id,
     build_library_agent,
     inner_react_tools,
@@ -431,3 +433,209 @@ async def test_library_non_empty_final_content_is_untouched():
     result = await graph.ainvoke(state, config={"configurable": {"thread_id": "lib-non-empty-1"}})
 
     assert result["messages"][-1].content == "좌석 현황 답변입니다."
+
+
+# ── Regression: real MCP content-block shape must still trigger HITL ─────────
+#
+# langchain_mcp_adapters builds every MCP tool as
+# StructuredTool(response_format="content_and_artifact"). agent_node invokes
+# tools with a bare args dict (tc.get("args", {}), no "type": "tool_call"), so
+# LangChain has no tool_call_id to attach the artifact to and
+# StructuredTool._format_output falls back to returning the raw content-block
+# LIST — e.g. [{"type": "text", "text": "{...json...}"}] — not the inner JSON
+# string a plain @tool function returns (every other test in this file uses
+# plain @tool functions, which is why they didn't catch this).
+#
+# Pre-fix, agent_node's `content = result if isinstance(result, str) else
+# json.dumps(result, ...)` would stringify the *wrapping list*, producing
+# content == '[{"type": "text", "text": "{\\"status\\": ...}"}]'. json.loads of
+# that is a LIST, so `isinstance(data, dict)` is False, hitl_triggered never
+# flips True, and the graph runs straight to done_node without ever pausing —
+# confirmed by directly invoking such a StructuredTool the same way agent_node
+# does (bare-args ainvoke) and observing the raw list comes back, not a string.
+# The fix (tool_result_to_text) unwraps that list to the inner JSON string, so
+# this test's assertions only pass with the fix in place.
+
+
+class _PrepareReserveArgs(BaseModel):
+    mcp_session_id: str
+    seat_id: int
+
+
+async def _real_mcp_prepare_reserve_coroutine(mcp_session_id: str, seat_id: int):
+    payload = json.dumps({"status": "OK", "data": {"actionId": 42, "seatLabel": "B-007"}})
+    return ([{"type": "text", "text": payload}], None)
+
+
+def _make_real_mcp_prepare_reserve_tool() -> StructuredTool:
+    """Build a tool matching the REAL shape langchain_mcp_adapters produces —
+    not the plain @tool functions the rest of this file uses."""
+    return StructuredTool(
+        name="prepare_reserve_library_seat",
+        description="예약 준비",
+        args_schema=_PrepareReserveArgs,
+        coroutine=_real_mcp_prepare_reserve_coroutine,
+        response_format="content_and_artifact",
+    )
+
+
+@pytest.mark.asyncio
+async def test_library_agent_interrupt_on_real_mcp_content_block_shape():
+    from langgraph.checkpoint.memory import MemorySaver
+
+    real_mcp_tool = _make_real_mcp_prepare_reserve_tool()
+    graph = build_library_agent([real_mcp_tool], llm=_make_library_llm()).compile(
+        checkpointer=MemorySaver()
+    )
+
+    initial: SsuAgentState = {
+        "messages": [HumanMessage(content="B-007 예약해줘")],
+        "mcp_session_id": "sess-001",
+        "library_connected": True,
+        "active_agent": "library",
+    }
+    config = {"configurable": {"thread_id": "lib-real-mcp-shape"}}
+
+    result = await graph.ainvoke(initial, config=config)
+
+    assert "__interrupt__" in result, "Expected graph to pause with __interrupt__"
+    interrupt_val = result["__interrupt__"][0].value
+    assert interrupt_val["type"] == "library_reservation_approval"
+    assert interrupt_val["action_id"] == 42
+    assert interrupt_val["details"]["seatLabel"] == "B-007"
+
+
+# ── check_approval_node: action id passed to confirm, honest result message ──
+
+
+@pytest.mark.asyncio
+async def test_check_approval_confirm_called_with_action_id():
+    """approve → confirm_action must be invoked WITH the server-extracted action_id."""
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.types import Command
+
+    confirm_calls: list[dict] = []
+
+    @tool
+    def prepare_reserve_library_seat(mcp_session_id: str, seat_id: int) -> str:
+        """예약 준비"""
+        return json.dumps({"status": "OK", "data": {"actionId": 100, "seatLabel": "C-010"}})
+
+    @tool
+    def confirm_action(mcp_session_id: str, action_id: int) -> str:
+        """예약 확정"""
+        confirm_calls.append({"mcp_session_id": mcp_session_id, "action_id": action_id})
+        return json.dumps(
+            {"status": "OK", "data": "예약 요청을 접수했습니다. intentId=555."}
+        )
+
+    graph = build_library_agent(
+        [prepare_reserve_library_seat, confirm_action],
+        llm=_make_library_llm(),
+    ).compile(checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "confirm-action-id"}}
+    initial: SsuAgentState = {
+        "messages": [HumanMessage(content="C-010 예약해줘")],
+        "mcp_session_id": "sess-100",
+        "library_connected": True,
+        "active_agent": "library",
+    }
+
+    interrupted = await graph.ainvoke(initial, config=config)
+    assert "__interrupt__" in interrupted
+
+    result = await graph.ainvoke(
+        Command(resume={"approved": True, "action_id": 100}),
+        config=config,
+    )
+
+    assert confirm_calls == [{"mcp_session_id": "sess-100", "action_id": 100}]
+    final = result["messages"][-1].content
+    assert "예약 확정 완료" in final
+    assert "intentId=555" in final
+
+
+@pytest.mark.asyncio
+async def test_check_approval_non_executed_result_not_reported_as_complete():
+    """A backend ambiguity notice (status OK, nothing executed) must not read
+    as '예약 확정 완료' — the honest backend text must surface instead."""
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.types import Command
+
+    ambiguous_text = (
+        "확정 대기 중인 액션이 여러 개입니다. 실행할 액션의 action_id를 지정해 다시 호출하세요. "
+        "대기 중: action_id=200(RESERVE), action_id=201(RESERVE)"
+    )
+
+    @tool
+    def prepare_reserve_library_seat(mcp_session_id: str, seat_id: int) -> str:
+        """예약 준비"""
+        return json.dumps({"status": "OK", "data": {"actionId": 200, "seatLabel": "D-020"}})
+
+    @tool
+    def confirm_action(mcp_session_id: str, action_id: int) -> str:
+        """예약 확정"""
+        return json.dumps({"status": "OK", "data": ambiguous_text})
+
+    graph = build_library_agent(
+        [prepare_reserve_library_seat, confirm_action],
+        llm=_make_library_llm(),
+    ).compile(checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "confirm-ambiguous"}}
+    initial: SsuAgentState = {
+        "messages": [HumanMessage(content="D-020 예약해줘")],
+        "mcp_session_id": "sess-200",
+        "library_connected": True,
+        "active_agent": "library",
+    }
+
+    interrupted = await graph.ainvoke(initial, config=config)
+    assert "__interrupt__" in interrupted
+
+    result = await graph.ainvoke(
+        Command(resume={"approved": True, "action_id": 200}),
+        config=config,
+    )
+
+    final = result["messages"][-1].content
+    assert "예약 확정 완료" not in final
+    assert ambiguous_text in final
+
+
+# ── Unit: _confirm_result_message ─────────────────────────────────────────────
+
+
+def test_confirm_result_message_success():
+    result = json.dumps({"status": "OK", "data": "예약 요청을 접수했습니다. intentId=1."})
+    assert (
+        _confirm_result_message(result)
+        == "예약 확정 완료: 예약 요청을 접수했습니다. intentId=1."
+    )
+
+
+def test_confirm_result_message_no_pending_action():
+    result = json.dumps({"status": "OK", "data": "대기 중인 액션이 없습니다."})
+    msg = _confirm_result_message(result)
+    assert msg == "대기 중인 액션이 없습니다."
+    assert "예약 확정 완료" not in msg
+
+
+def test_confirm_result_message_ambiguous():
+    text = (
+        "확정 대기 중인 액션이 여러 개입니다. 실행할 액션의 action_id를 지정해 다시 호출하세요. "
+        "대기 중: action_id=1(RESERVE)"
+    )
+    result = json.dumps({"status": "OK", "data": text})
+    assert _confirm_result_message(result) == text
+
+
+def test_confirm_result_message_unwraps_content_block_list():
+    payload = json.dumps({"status": "OK", "data": "예약 요청을 접수했습니다."})
+    result = [{"type": "text", "text": payload}]
+    assert _confirm_result_message(result) == "예약 확정 완료: 예약 요청을 접수했습니다."
+
+
+def test_confirm_result_message_non_ok_status():
+    result = json.dumps({"status": "AUTH_REQUIRED", "loginUrl": "https://example.com"})
+    msg = _confirm_result_message(result)
+    assert "확정 처리에 실패했어요" in msg
