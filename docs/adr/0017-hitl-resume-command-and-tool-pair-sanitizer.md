@@ -97,6 +97,9 @@ prebuilt react invocation 모두 같은 sanitizer를 통과한다. checkpoint hi
 - `ssu_agent/agents/library.py`: `_extract_action_id`가 최근 10개 ToolMessage에서
   pending `actionId`를 찾는다.
 
+> 갱신 (2026-07-12): `_extract_action_id`는 더 이상 최근 10개 window를 보지 않고,
+> 마지막 `HumanMessage` 이후의 현재 턴만 스캔한다. 배경과 회귀 테스트는 ADR 0019를 참조한다.
+
 둘 다 provider history를 만드는 window가 아니라 라우팅/승인 대상 탐색용 scan이다.
 따라서 pair-aware window extension은 적용하지 않았고, provider 호출 경계의 sanitizer로
 엄격 provider 불변식을 맞춘다.
