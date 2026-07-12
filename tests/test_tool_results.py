@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import json
 
-from ssu_agent.tool_results import tool_result_to_text
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from ssu_agent.tool_results import sanitize_tool_pairing, tool_result_to_text
 
 
 def test_str_passthrough():
@@ -76,3 +78,65 @@ def test_mixed_dict_and_object_blocks_concat_in_order():
 
 def test_non_string_non_list_non_dict_falls_back_to_str():
     assert tool_result_to_text(42) == "42"
+
+
+def test_sanitize_tool_pairing_drops_orphan_tool_message():
+    human = HumanMessage(content="질문")
+    orphan = ToolMessage(content="orphan", tool_call_id="missing")
+
+    sanitized = sanitize_tool_pairing([human, orphan])
+
+    assert sanitized == [human]
+
+
+def test_sanitize_tool_pairing_strips_dangling_tool_calls_without_mutating():
+    ai = AIMessage(
+        content="도구를 호출합니다.",
+        tool_calls=[
+            {"id": "call-a", "name": "tool_a", "args": {}, "type": "tool_call"},
+            {"id": "call-b", "name": "tool_b", "args": {}, "type": "tool_call"},
+        ],
+    )
+    tool_result = ToolMessage(content="A result", tool_call_id="call-a")
+    next_user = HumanMessage(content="다음 질문")
+
+    sanitized = sanitize_tool_pairing([ai, tool_result, next_user])
+
+    assert sanitized[0] is not ai
+    assert sanitized[0].content == ai.content
+    assert [tc["id"] for tc in sanitized[0].tool_calls] == ["call-a"]
+    assert sanitized[1] is tool_result
+    assert sanitized[2] is next_user
+    assert [tc["id"] for tc in ai.tool_calls] == ["call-a", "call-b"]
+
+
+def test_sanitize_tool_pairing_keeps_well_formed_history_unchanged():
+    human = HumanMessage(content="질문")
+    ai = AIMessage(
+        content="",
+        tool_calls=[{"id": "call-a", "name": "tool_a", "args": {}, "type": "tool_call"}],
+    )
+    tool_result = ToolMessage(content="A result", tool_call_id="call-a")
+    final = AIMessage(content="답변")
+    messages = [human, ai, tool_result, final]
+
+    sanitized = sanitize_tool_pairing(messages)
+
+    assert sanitized == messages
+    assert sanitized[0] is human
+    assert sanitized[1] is ai
+    assert sanitized[2] is tool_result
+    assert sanitized[3] is final
+
+
+def test_sanitize_tool_pairing_prod_failure_shape():
+    ai = AIMessage(
+        content="",
+        tool_calls=[{"id": "call-a", "name": "tool_a", "args": {}, "type": "tool_call"}],
+    )
+    valid_result = ToolMessage(content="A result", tool_call_id="call-a")
+    orphan_result = ToolMessage(content="B result", tool_call_id="call-b")
+
+    sanitized = sanitize_tool_pairing([ai, valid_result, orphan_result])
+
+    assert sanitized == [ai, valid_result]

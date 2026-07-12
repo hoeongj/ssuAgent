@@ -326,7 +326,8 @@ async def test_library_resume_confirm_uses_fresh_updated_state():
     """The approval node must read the state updated immediately before resume,
     not the stale mcp_session_id checkpointed during the original prepare turn."""
     from langgraph.checkpoint.memory import MemorySaver
-    from langgraph.types import Command
+
+    from ssu_agent.main import ResumeRequest, build_resume_command
 
     confirmed_sessions: list[str | None] = []
 
@@ -356,12 +357,16 @@ async def test_library_resume_confirm_uses_fresh_updated_state():
     interrupted = await graph.ainvoke(initial, config=config)
     assert "__interrupt__" in interrupted
 
-    config = await graph.aupdate_state(
-        config,
-        {"mcp_session_id": "fresh-session", "library_connected": True},
-    )
     result = await graph.ainvoke(
-        Command(resume={"approved": True, "action_id": 100}),
+        build_resume_command(
+            ResumeRequest(
+                thread_id="lib-resume-fresh",
+                approved=True,
+                action_id=100,
+                mcp_session_id="fresh-session",
+                library_connected=True,
+            )
+        ),
         config=config,
     )
 

@@ -59,7 +59,7 @@ from langgraph.types import interrupt
 from ssu_agent.agents.react_loop import apply_empty_response_fallback, drop_routing_messages
 from ssu_agent.llm_factory import create_llm, get_llm_sequence
 from ssu_agent.supervisor.state import SsuAgentState
-from ssu_agent.tool_results import tool_result_to_text
+from ssu_agent.tool_results import sanitize_tool_pairing, tool_result_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -346,7 +346,7 @@ def build_library_agent(
             }
 
         prompt = _build_library_prompt(mcp_session_id)
-        input_messages = [SystemMessage(content=prompt), *messages]
+        input_messages = sanitize_tool_pairing([SystemMessage(content=prompt), *messages])
 
         last_exc: Exception | None = None
         for _llm in llm_seq:
@@ -448,7 +448,10 @@ def build_library_agent(
         # ────────────────────────────────────────────────────────────────────
 
         if resume.get("approved") and confirm_tool is not None:
-            mcp_session_id = state.get("mcp_session_id")
+            # The FastAPI resume endpoint includes the latest mcp_session_id in
+            # the resume payload. Prefer it because top-level Command(update=...)
+            # does not rewrite this paused child graph's local checkpoint.
+            mcp_session_id = resume.get("mcp_session_id") or state.get("mcp_session_id")
             # action_id sourced from the server-extracted action (never the client
             # resume payload) so the caller cannot point confirm_action at an
             # action it did not just get approval for.

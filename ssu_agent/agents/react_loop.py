@@ -25,7 +25,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 
 from ssu_agent.supervisor.state import SsuAgentState
-from ssu_agent.tool_results import tool_result_to_text
+from ssu_agent.tool_results import sanitize_tool_pairing, tool_result_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ async def run_react_loop(
     ``active_agent`` so control returns to the supervisor.
     """
     messages = drop_routing_messages(state["messages"])
-    input_messages = [SystemMessage(content=system_prompt), *messages]
+    input_messages = sanitize_tool_pairing([SystemMessage(content=system_prompt), *messages])
 
     last_exc: Exception | None = None
     for _llm in llm_seq:
