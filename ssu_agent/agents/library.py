@@ -60,7 +60,7 @@ from langgraph.types import interrupt
 from ssu_agent.agents.react_loop import apply_empty_response_fallback, drop_routing_messages
 from ssu_agent.llm_factory import create_llm, get_llm_sequence
 from ssu_agent.supervisor.state import SsuAgentState
-from ssu_agent.tool_results import sanitize_tool_pairing, tool_result_to_text
+from ssu_agent.tool_results import content_to_text, sanitize_tool_pairing, tool_result_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -104,26 +104,12 @@ _RESERVATION_INTENT_RE = re.compile(
 )
 
 
-def _message_content_text(content: object) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-            elif isinstance(item, str):
-                parts.append(item)
-        return " ".join(parts)
-    return ""
-
-
 def _last_human_message_text(messages: list) -> str:
     for msg in reversed(messages):
         if isinstance(msg, HumanMessage):
-            return _message_content_text(msg.content)
+            return content_to_text(msg.content)
         if isinstance(msg, dict) and msg.get("role") == "user":
-            return _message_content_text(msg.get("content"))
+            return content_to_text(msg.get("content"))
     return ""
 
 

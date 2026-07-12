@@ -95,6 +95,7 @@ async def test_resume_completes_without_reinterrupting(_graph) -> None:
 
     resumed = await _collect(Command(resume={"approved": True, "action_id": 77}), config)
     types = [e["type"] for e in resumed]
+    assert "handoff" not in types, f"resume must not emit a fresh handoff: {types}"
     assert "interrupt" not in types, f"resume must not re-interrupt: {types}"
     assert "done" in types, f"resumed stream must complete with done: {types}"
 

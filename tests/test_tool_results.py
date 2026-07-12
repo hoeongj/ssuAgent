@@ -27,6 +27,10 @@ def test_content_to_text_reuses_tool_result_flattening():
     )
 
 
+def test_content_to_text_flattens_message_content_string_blocks():
+    assert content_to_text(["hello", {"text": "there"}]) == "hello there"
+
+
 def test_block_list_single_text_block():
     payload = json.dumps({"status": "OK", "data": {"actionId": 42}})
     result = tool_result_to_text([{"type": "text", "text": payload}])

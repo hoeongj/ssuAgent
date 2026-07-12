@@ -54,7 +54,21 @@ def tool_result_to_text(result: object) -> str:
 
 def content_to_text(content: object) -> str:
     """Flatten an AIMessage.content (str or content-block list) to plain text."""
-    return tool_result_to_text(content)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+            else:
+                text = getattr(item, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+        return " ".join(parts)
+    return ""
 
 
 def _tool_call_id(tool_call: dict) -> str | None:

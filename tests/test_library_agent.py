@@ -500,6 +500,11 @@ class _PrepareReserveArgs(BaseModel):
     seat_id: int
 
 
+class _WaitStatusArgs(BaseModel):
+    mcp_session_id: str
+    intent_id: int
+
+
 async def _real_mcp_prepare_reserve_coroutine(mcp_session_id: str, seat_id: int):
     payload = json.dumps({"status": "OK", "data": {"actionId": 42, "seatLabel": "B-007"}})
     return ([{"type": "text", "text": payload}], None)
@@ -714,6 +719,68 @@ async def test_check_approval_async_accept_polls_until_success(monkeypatch: pyte
         {"mcp_session_id": "sess-777", "intent_id": 777},
         {"mcp_session_id": "sess-777", "intent_id": 777},
     ]
+
+
+@pytest.mark.asyncio
+async def test_check_approval_async_accept_polls_real_mcp_wait_status_content_block():
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.types import Command
+
+    wait_calls: list[dict] = []
+
+    @tool
+    def prepare_reserve_library_seat(mcp_session_id: str, seat_id: int) -> str:
+        """예약 준비"""
+        return json.dumps({"status": "OK", "data": {"actionId": 781, "seatLabel": "B-011"}})
+
+    @tool
+    def confirm_action(mcp_session_id: str, action_id: int) -> str:
+        """예약 확정"""
+        return json.dumps({"status": "OK", "data": "예약 요청을 접수했습니다. intentId=781."})
+
+    async def wait_status_coroutine(mcp_session_id: str, intent_id: int):
+        wait_calls.append({"mcp_session_id": mcp_session_id, "intent_id": intent_id})
+        envelope = {
+            "status": "OK",
+            "data": (
+                "intentId=781, status=SUCCEEDED, attempts=1, targetSeatId=B-011, "
+                "nextAttemptAt=null, expiresAt=null, completedAt=now, outcome=SUCCESS, "
+                "message=B-011 좌석 예약이 완료되었습니다. "
+                "Next action: no further action needed."
+            ),
+        }
+        return ([{"type": "text", "text": json.dumps(envelope, ensure_ascii=False)}], None)
+
+    get_library_wait_status = StructuredTool(
+        name="get_library_wait_status",
+        description="예약 상태 확인",
+        args_schema=_WaitStatusArgs,
+        coroutine=wait_status_coroutine,
+        response_format="content_and_artifact",
+    )
+
+    graph = build_library_agent(
+        [prepare_reserve_library_seat, confirm_action, get_library_wait_status],
+        llm=_make_library_llm(),
+    ).compile(checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "confirm-poll-real-mcp-content-block"}}
+    interrupted = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="B-011 예약해줘")],
+            "mcp_session_id": "sess-781",
+            "library_connected": True,
+            "active_agent": "library",
+        },
+        config=config,
+    )
+    assert "__interrupt__" in interrupted
+
+    result = await graph.ainvoke(Command(resume={"approved": True}), config=config)
+
+    final = result["messages"][-1].content
+    assert "예약 완료" in final
+    assert "B-011 좌석 예약이 완료되었습니다" in final
+    assert wait_calls == [{"mcp_session_id": "sess-781", "intent_id": 781}]
 
 
 @pytest.mark.asyncio

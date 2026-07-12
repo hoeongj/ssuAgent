@@ -168,7 +168,7 @@ _TOOL_LABELS: dict[str, str] = {
     "evaluate_graduation_with_policy": "졸업 요건 평가 중...",
     # 도서관 대기 · 열람실 좌석
     "get_room_available_seats": "열람실 좌석 조회 중...",
-    "get_library_wait_status": "대기 현황 조회 중...",
+    "get_library_wait_status": "예약 상태 확인 중...",
     "wait_for_library_seat": "좌석 대기 등록 중...",
     "cancel_library_wait": "대기 취소 중...",
     # 세션
@@ -467,6 +467,10 @@ def _is_capacity_error(exc: BaseException) -> bool:
     return False
 
 
+def _is_resume_stream_input(input_data: dict | object) -> bool:
+    return isinstance(input_data, Command) and getattr(input_data, "resume", None) is not None
+
+
 _FN_OPEN = "<function"
 _FN_CLOSE = "</function>"
 
@@ -537,6 +541,7 @@ async def _stream_graph(input_data: dict | object, config: dict):
     supervisor_buf = ""
     supervisor_routed = False
     handoff_emitted = False
+    suppress_chain_start_handoff = _is_resume_stream_input(input_data)
     try:
         async for event in _graph.astream_events(input_data, config=config, version="v2"):
             etype = event.get("event", "")
@@ -571,7 +576,11 @@ async def _stream_graph(input_data: dict | object, config: dict):
                             yield _sse({"type": "text", "content": cleaned})
 
             elif etype == "on_chain_start":
-                if name in _AGENT_NODE_NAMES and not handoff_emitted:
+                if (
+                    name in _AGENT_NODE_NAMES
+                    and not handoff_emitted
+                    and not suppress_chain_start_handoff
+                ):
                     supervisor_routed = True
                     supervisor_buf = ""
                     handoff_emitted = True

@@ -68,7 +68,7 @@ from ssu_agent.agents.library import build_library_agent
 from ssu_agent.agents.lms import build_lms_agent
 from ssu_agent.llm_factory import get_llm_sequence
 from ssu_agent.supervisor.state import SsuAgentState
-from ssu_agent.tool_results import sanitize_tool_pairing
+from ssu_agent.tool_results import content_to_text, sanitize_tool_pairing
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +188,31 @@ def _make_routing_tools() -> list[BaseTool]:
 _ROUTE_RE = re.compile(r"ROUTE_TO:(\w+)")
 _LIBRARY_ROUTE_KEYWORDS = ("도서관", "열람실", "좌석")
 _LIBRARY_CONTINUATION_MAX_CHARS = 20
+_LIBRARY_AGENT_PREFIX_RE = re.compile(r"^\s*\[도서관 에이전트\]\s*")
+_LIBRARY_LOGIN_GATE_RE = re.compile(
+    r"도서관.*로그인.*필요|로그인.*필요.*도서관|도서관.*로그인해 주세요"
+)
+_LIBRARY_COMPLETED_OUTCOME_MARKERS = (
+    "예약 완료",
+    "예약이 취소되었습니다",
+    "예약 실패",
+    "접수했습니다",
+)
+_STRONG_OTHER_DOMAIN_KEYWORDS = {
+    "성적",
+    "졸업",
+    "학점",
+    "수강",
+    "시간표",
+    "강의",
+    "과제",
+    "시험",
+    "학식",
+    "식단",
+    "장학",
+    "채플",
+    "등록금",
+}
 _LIBRARY_CLARIFICATION_CUES = (
     "어디",
     "어느",
@@ -231,42 +256,38 @@ get_my_lms_courses → get_my_lms_materials → prepare_lms_material_export
 # ── Post-supervisor routing node ──────────────────────────────────────────────
 
 
-def _message_content_text(content: object) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-        return " ".join(parts)
-    return ""
-
-
 def _latest_human_message_text(messages: list) -> str:
     for msg in reversed(messages):
         if isinstance(msg, HumanMessage):
-            return _message_content_text(msg.content)
+            return content_to_text(msg.content)
         if isinstance(msg, dict) and msg.get("role") in {"user", "human"}:
-            return _message_content_text(msg.get("content"))
+            return content_to_text(msg.get("content"))
     return ""
 
 
 def _last_ai_message_text(messages: list) -> str:
     for msg in reversed(messages):
         if isinstance(msg, AIMessage):
-            return _message_content_text(msg.content)
+            return content_to_text(msg.content)
         if isinstance(msg, dict) and msg.get("role") in {"assistant", "ai"}:
-            return _message_content_text(msg.get("content"))
+            return content_to_text(msg.get("content"))
     return ""
+
+
+def _strip_library_agent_prefix(text: str) -> str:
+    return _LIBRARY_AGENT_PREFIX_RE.sub("", text, count=1).strip()
 
 
 def _is_library_reservation_clarification(text: str) -> bool:
     return ("?" in text or "까요" in text or "세요" in text) and any(
         cue in text for cue in _LIBRARY_CLARIFICATION_CUES
     )
+
+
+def _is_library_awaiting_user_input(text: str) -> bool:
+    if not text or any(marker in text for marker in _LIBRARY_COMPLETED_OUTCOME_MARKERS):
+        return False
+    return bool(_LIBRARY_LOGIN_GATE_RE.search(text)) or _is_library_reservation_clarification(text)
 
 
 def _deterministic_route(state: SsuAgentState) -> str | None:
@@ -276,18 +297,15 @@ def _deterministic_route(state: SsuAgentState) -> str | None:
     if not user_text:
         return None
 
+    if any(keyword in user_text for keyword in _STRONG_OTHER_DOMAIN_KEYWORDS):
+        return None
+
     if any(keyword in user_text for keyword in _LIBRARY_ROUTE_KEYWORDS):
         return "library_agent"
 
-    ai_text = _last_ai_message_text(messages)
-    if (
-        len(user_text) <= _LIBRARY_CONTINUATION_MAX_CHARS
-        and "도서관" in ai_text
-        and (
-            "로그인" in ai_text
-            or "예약" in ai_text
-            or _is_library_reservation_clarification(ai_text)
-        )
+    ai_text = _strip_library_agent_prefix(_last_ai_message_text(messages))
+    if len(user_text) <= _LIBRARY_CONTINUATION_MAX_CHARS and _is_library_awaiting_user_input(
+        ai_text
     ):
         return "library_agent"
 

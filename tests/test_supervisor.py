@@ -269,6 +269,20 @@ def test_deterministic_route_exact_library_transcript() -> None:
         _deterministic_route(
             {
                 "messages": [
+                    AIMessage(content=f"[도서관 에이전트] {_LIBRARY_RESERVATION_LOGIN_MESSAGE}"),
+                    HumanMessage(content="로그인했어"),
+                ],
+                "mcp_session_id": "sess-1",
+                "library_connected": True,
+                "active_agent": None,
+            }
+        )
+        == "library_agent"
+    )
+    assert (
+        _deterministic_route(
+            {
+                "messages": [
                     AIMessage(content="도서관 예약을 진행할 열람실이나 좌석 선호가 있나요?"),
                     HumanMessage(content="그냥 아무대나"),
                 ],
@@ -299,6 +313,31 @@ def test_deterministic_route_unrelated_messages_stay_with_supervisor() -> None:
                 "messages": [
                     AIMessage(content=_LIBRARY_RESERVATION_LOGIN_MESSAGE),
                     HumanMessage(content="로그인은 했는데 지금은 다른 얘기를 길게 좀 하고 싶어"),
+                ],
+                "mcp_session_id": "sess-1",
+                "library_connected": True,
+                "active_agent": None,
+            }
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "follow_up",
+    ["졸업 요건은?", "내 성적 알려줘", "학식 뭐야?", "고마워"],
+)
+def test_deterministic_route_completed_library_turn_does_not_hijack_followups(
+    follow_up: str,
+) -> None:
+    assert (
+        _deterministic_route(
+            {
+                "messages": [
+                    AIMessage(
+                        content="[도서관 에이전트] 예약 완료: B-007 좌석 예약이 완료되었습니다."
+                    ),
+                    HumanMessage(content=follow_up),
                 ],
                 "mcp_session_id": "sess-1",
                 "library_connected": True,
