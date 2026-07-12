@@ -413,10 +413,31 @@ def _strip_confirm_action_instruction_for_human(message: str) -> str:
         message.rfind("？", 0, instruction_index),
     )
     if boundary_index != -1:
-        cleaned = message[: boundary_index + 1].strip()
+        old_cleaned = message[: boundary_index + 1].strip()
+        prefix = old_cleaned
     else:
-        cleaned = message[:instruction_index].strip()
-    return cleaned or message
+        old_cleaned = message[:instruction_index].strip()
+        prefix = ""
+
+    terminator_indices = [
+        index
+        for terminator in (".", "!", "?")
+        if (index := message.find(terminator, instruction_index)) != -1
+    ]
+    if not terminator_indices:
+        return old_cleaned or message
+
+    strip_end = min(terminator_indices) + 1
+    while strip_end < len(message) and message[strip_end].isspace():
+        strip_end += 1
+
+    trailing = message[strip_end:].strip()
+    if not trailing:
+        return old_cleaned or message
+
+    if prefix:
+        return f"{prefix} {trailing}"
+    return trailing
 
 
 def _human_display_action(action: dict) -> dict:

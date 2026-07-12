@@ -363,6 +363,52 @@ async def test_library_agent_interrupt_message_is_humanized_without_changing_too
 
 
 @pytest.mark.asyncio
+async def test_library_agent_interrupt_message_keeps_trailing_graduate_only_warning():
+    from langgraph.checkpoint.memory import MemorySaver
+
+    graduate_warning = (
+        "주의: 이 좌석은 대학원 전용 열람실입니다. "
+        "학부생은 이용 자격이 없을 수 있으니 확인 후 진행하세요."
+    )
+    prepare_message = (
+        "오픈열람실(2F) 4번 좌석(좌석ID 930) 예약을 준비했습니다. "
+        "사용자가 승인하면 confirm_action을 호출해 최종 확인하세요. "
+        f"{graduate_warning}"
+    )
+
+    @tool
+    def prepare_reserve_library_seat(mcp_session_id: str, seat_id: int) -> str:
+        """예약 준비"""
+        return json.dumps(
+            {"status": "OK", "data": {"actionId": 930, "message": prepare_message}},
+            ensure_ascii=False,
+        )
+
+    graph = build_library_agent([prepare_reserve_library_seat], llm=_make_library_llm()).compile(
+        checkpointer=MemorySaver()
+    )
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="오픈열람실 좌석 예약해줘")],
+            "mcp_session_id": "sess-930",
+            "library_connected": True,
+            "active_agent": "library",
+        },
+        config={"configurable": {"thread_id": "lib-hitl-graduate-warning"}},
+    )
+
+    human_message = result["__interrupt__"][0].value["details"]["message"]
+    assert human_message == (
+        f"오픈열람실(2F) 4번 좌석(좌석ID 930) 예약을 준비했습니다. {graduate_warning}"
+    )
+    assert "confirm_action" not in human_message
+    assert "주의: 이 좌석은 대학원 전용 열람실입니다." in human_message
+
+    tool_contents = [m.content for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert any(prepare_message in content for content in tool_contents)
+
+
+@pytest.mark.asyncio
 async def test_library_resume_confirm_uses_fresh_updated_state():
     """The approval node must read the state updated immediately before resume,
     not the stale mcp_session_id checkpointed during the original prepare turn."""
