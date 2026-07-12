@@ -75,6 +75,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.types import Command
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -381,6 +382,23 @@ class ResumeRequest(BaseModel):
     principal: str | None = None
 
 
+def build_resume_command(req: ResumeRequest) -> Command:
+    """Build the atomic LangGraph resume command used by /agent/resume."""
+    resume_payload = {
+        "approved": req.approved,
+        "action_id": req.action_id,
+        "mcp_session_id": req.mcp_session_id,
+        "library_connected": req.library_connected,
+    }
+    return Command(
+        resume=resume_payload,
+        update={
+            "mcp_session_id": req.mcp_session_id,
+            "library_connected": req.library_connected,
+        },
+    )
+
+
 # ── SSE helpers ───────────────────────────────────────────────────────────────
 
 
@@ -574,7 +592,9 @@ async def _stream_graph(input_data: dict | object, config: dict):
                 # fallbacks) do not emit on_chat_model_stream chunks. Stream the
                 # library agent node's new AIMessage content, but skip supervisor
                 # chain chunks and messages already streamed token-by-token.
-                if name == "agent" and "supervisor_llm" not in (event.get("tags") or []):
+                if name in {"agent", "check_approval"} and "supervisor_llm" not in (
+                    event.get("tags") or []
+                ):
                     messages = chunk.get("messages") if isinstance(chunk, dict) else None
                     if isinstance(messages, list):
                         for msg in messages:
@@ -654,29 +674,15 @@ async def resume_agent(request: Request, req: ResumeRequest):
     """Resume a graph paused by a library HITL interrupt.
 
     The client sends {approved: bool, action_id: int} after the user decides.
-    LangGraph resumes the library_agent's execute_confirm node if approved,
-    or short-circuits to done if denied.
+    LangGraph re-enters the library check_approval_node, where interrupt()
+    returns the resume payload; approval calls confirm_action and denial emits
+    the cancellation message.
     """
-    from langgraph.types import Command
-
     await claim_or_verify_thread_owner(req.thread_id, req.mcp_session_id, req.principal)
-    resume_payload = {
-        "approved": req.approved,
-        "action_id": req.action_id,
-        "mcp_session_id": req.mcp_session_id,
-        "library_connected": req.library_connected,
-    }
     config = {"configurable": {"thread_id": req.thread_id}}
-    config = await _graph.aupdate_state(
-        config,
-        {
-            "mcp_session_id": req.mcp_session_id,
-            "library_connected": req.library_connected,
-        },
-    )
 
     return StreamingResponse(
-        _stream_graph(Command(resume=resume_payload), config),
+        _stream_graph(build_resume_command(req), config),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

@@ -68,6 +68,7 @@ from ssu_agent.agents.library import build_library_agent
 from ssu_agent.agents.lms import build_lms_agent
 from ssu_agent.llm_factory import get_llm_sequence
 from ssu_agent.supervisor.state import SsuAgentState
+from ssu_agent.tool_results import sanitize_tool_pairing
 
 logger = logging.getLogger(__name__)
 
@@ -286,16 +287,19 @@ async def build_supervisor_graph(
             **config,
             "tags": [*(config.get("tags") or []), "supervisor_llm"],
         }
-        input_message_count = len(state["messages"])
+        input_messages = sanitize_tool_pairing(state["messages"])
+        input_message_count = len(input_messages)
         for idx, react in enumerate(supervisor_reacts):
             try:
                 result = await react.ainvoke(
-                    {"messages": state["messages"]}, config=supervisor_config
+                    {"messages": input_messages},
+                    config=supervisor_config,
                 )
-                for msg in result["messages"][input_message_count:]:
+                new_messages = result["messages"][input_message_count:]
+                for msg in new_messages:
                     if isinstance(msg, AIMessage):
                         msg.name = "supervisor"
-                return {"messages": result["messages"]}
+                return {"messages": new_messages}
             except Exception as exc:
                 # Same rationale as react_loop: surface WHY each provider failed
                 # instead of only re-raising the last one.

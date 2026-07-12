@@ -113,17 +113,8 @@ def _post_stream(client: TestClient, headers: dict | None = None):
 
 
 class _FakeResumeGraph:
-    def __init__(self):
-        self.update_calls: list[tuple[dict, dict]] = []
-
     async def aupdate_state(self, config: dict, values: dict):
-        self.update_calls.append((config, values))
-        return {
-            "configurable": {
-                **config["configurable"],
-                "checkpoint_id": "fresh-checkpoint",
-            }
-        }
+        raise AssertionError("resume must not call aupdate_state before Command(resume=...)")
 
 
 # ── No key configured → gate is a no-op (prod behavior preserved) ───────────────
@@ -221,7 +212,7 @@ def test_stream_initial_state_includes_library_connected(
     assert captured["input_data"]["library_connected"] is True
 
 
-def test_resume_updates_fresh_session_state_before_resume_stream(
+def test_resume_builds_atomic_command_without_pre_update_state(
     monkeypatch: pytest.MonkeyPatch,
     client: TestClient,
 ):
@@ -250,14 +241,18 @@ def test_resume_updates_fresh_session_state_before_resume_stream(
     )
 
     assert resp.status_code == 200
-    assert fake_graph.update_calls == [
-        (
-            {"configurable": {"thread_id": "library-resume-fresh-api"}},
-            {"mcp_session_id": "fresh-session", "library_connected": True},
-        )
-    ]
-    assert captured["config"]["configurable"]["checkpoint_id"] == "fresh-checkpoint"
+    assert captured["config"] == {"configurable": {"thread_id": "library-resume-fresh-api"}}
     assert isinstance(captured["input_data"], Command)
+    assert captured["input_data"].resume == {
+        "approved": True,
+        "action_id": 100,
+        "mcp_session_id": "fresh-session",
+        "library_connected": True,
+    }
+    assert captured["input_data"].update == {
+        "mcp_session_id": "fresh-session",
+        "library_connected": True,
+    }
     assert captured["input_data"].resume["mcp_session_id"] == "fresh-session"
     assert captured["input_data"].resume["library_connected"] is True
 
