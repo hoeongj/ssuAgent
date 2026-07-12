@@ -133,15 +133,17 @@ async def test_loop_is_bounded_by_max_tool_turns():
     assert calls["n"] == _MAX_TOOL_TURNS
     # No AIMessage carried content, so the loop returns the fallback tag.
     assert result["messages"][-1].content == "[테스트] 처리 완료"
+    assert result["messages"][-1].id is None
 
 
 @pytest.mark.asyncio
 async def test_empty_final_content_uses_fallback():
-    llm = _SeqLLM(responses=[AIMessage(content=" \n ")])
+    llm = _SeqLLM(responses=[AIMessage(content=" \n ", id="blank-final")])
 
     result = await run_react_loop([llm], [], "시스템", "테스트", _state(), {})
 
     assert result["messages"][-1].content == f"[테스트] {EMPTY_RESPONSE_FALLBACK}"
+    assert result["messages"][-1].id == "blank-final"
 
 
 @pytest.mark.asyncio
@@ -151,3 +153,22 @@ async def test_non_empty_final_content_is_untouched():
     result = await run_react_loop([llm], [], "시스템", "테스트", _state(), {})
 
     assert result["messages"][-1].content == "[테스트] 정상 답변입니다."
+
+
+@pytest.mark.asyncio
+async def test_content_block_final_answer_is_flattened_and_reuses_model_id():
+    llm = _SeqLLM(
+        responses=[
+            AIMessage(
+                content=[{"type": "text", "text": "졸업 요건은 130학점입니다.", "index": 0}],
+                id="claude-final-1",
+            )
+        ]
+    )
+
+    result = await run_react_loop([llm], [], "시스템", "학사 에이전트", _state(), {})
+    tagged = result["messages"][-1]
+
+    assert tagged.content == "[학사 에이전트] 졸업 요건은 130학점입니다."
+    assert tagged.id == "claude-final-1"
+    assert "{" not in tagged.content

@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 from ssu_agent import main
 
@@ -177,6 +177,42 @@ async def test_stream_skips_non_text_content_blocks(_fake_graph) -> None:
     assert "input_json_delta" not in out
     assert "partial_json" not in out
     assert "toolu_" not in out
+
+
+@pytest.mark.asyncio
+async def test_token_streamed_answer_dedups_same_id_tagged_chain_message(_fake_graph) -> None:
+    """A token-streamed model answer and the tagged node reply share an id."""
+    answer = "졸업 요건은 130학점입니다."
+    message_id = "academic-final-1"
+    _fake_graph(
+        [
+            {
+                "event": "on_chat_model_stream",
+                "name": "agent",
+                "data": {"chunk": AIMessageChunk(content=answer, id=message_id)},
+            },
+            {
+                "event": "on_chain_stream",
+                "name": "agent",
+                "data": {
+                    "chunk": {
+                        "messages": [
+                            AIMessage(
+                                content=f"[학사 에이전트] {answer}",
+                                id=message_id,
+                            )
+                        ]
+                    }
+                },
+            },
+        ]
+    )
+
+    out = await _collect()
+
+    assert out.count(answer) == 1
+    assert "[학사 에이전트]" not in out
+    assert '"type": "done"' in out
 
 
 # ── Eval 2: exceptions do not leak internal detail ────────────────────────────

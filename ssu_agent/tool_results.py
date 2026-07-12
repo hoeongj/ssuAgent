@@ -52,6 +52,11 @@ def tool_result_to_text(result: object) -> str:
     return str(result)
 
 
+def content_to_text(content: object) -> str:
+    """Flatten an AIMessage.content (str or content-block list) to plain text."""
+    return tool_result_to_text(content)
+
+
 def _tool_call_id(tool_call: dict) -> str | None:
     value = tool_call.get("id")
     return value if isinstance(value, str) and value else None
