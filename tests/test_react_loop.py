@@ -143,7 +143,8 @@ async def test_empty_final_content_uses_fallback():
     result = await run_react_loop([llm], [], "시스템", "테스트", _state(), {})
 
     assert result["messages"][-1].content == f"[테스트] {EMPTY_RESPONSE_FALLBACK}"
-    assert result["messages"][-1].id == "blank-final"
+    assert result["messages"][-1].id is None
+    assert result["messages"][-1].id != "blank-final"
 
 
 @pytest.mark.asyncio

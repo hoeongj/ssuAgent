@@ -58,7 +58,11 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
 from langgraph.types import interrupt
 
-from ssu_agent.agents.react_loop import apply_empty_response_fallback, drop_routing_messages
+from ssu_agent.agents.react_loop import (
+    EMPTY_RESPONSE_FALLBACK,
+    apply_empty_response_fallback,
+    drop_routing_messages,
+)
 from ssu_agent.llm_factory import create_llm, get_llm_sequence
 from ssu_agent.supervisor.state import SsuAgentState
 from ssu_agent.tool_results import content_to_text, sanitize_tool_pairing, tool_result_to_text
@@ -614,8 +618,15 @@ def build_library_agent(
                     if hitl_triggered:
                         break
 
-                apply_empty_response_fallback(history[len(input_messages) :])
-                return {"messages": history[len(input_messages) :]}
+                output_messages = history[len(input_messages) :]
+                apply_empty_response_fallback(output_messages)
+                for msg in output_messages:
+                    if (
+                        isinstance(msg, AIMessage)
+                        and content_to_text(msg.content).strip() == EMPTY_RESPONSE_FALLBACK.strip()
+                    ):
+                        msg.id = None
+                return {"messages": output_messages}
             except Exception as exc:
                 # Log every provider failure — this used to swallow all but the
                 # last exception (last_exc only), hiding WHY the earlier

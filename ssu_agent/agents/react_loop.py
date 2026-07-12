@@ -189,9 +189,17 @@ async def run_react_loop(
                 None,
             )
             text = content_to_text(last_ai.content) if last_ai else ""
+            fallback_applied = (
+                last_ai is not None
+                and content_to_text(last_ai.content).strip() == EMPTY_RESPONSE_FALLBACK.strip()
+            )
             tagged = AIMessage(
                 content=f"[{tag}] {text}" if text.strip() else f"[{tag}] 처리 완료",
-                id=last_ai.id if last_ai else None,
+                # id reuse is a dedup optimization valid only when the tagged
+                # text equals the streamed text. The empty-response fallback
+                # deliberately diverges, so it needs a fresh id or SSE id-dedup
+                # drops it (regression from ef0dff4).
+                id=None if last_ai is None or fallback_applied else last_ai.id,
             )
             return {"messages": [tagged], "active_agent": None}
         except Exception as exc:
