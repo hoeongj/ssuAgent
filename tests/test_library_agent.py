@@ -567,7 +567,7 @@ async def test_library_auth_required_returns_login_message_not_hallucination():
 async def test_library_empty_final_content_uses_fallback():
     from langgraph.checkpoint.memory import MemorySaver
 
-    llm = _MockLibraryLLM(responses=[AIMessage(content=" \n ")])
+    llm = _MockLibraryLLM(responses=[AIMessage(content=" \n ", id="library-blank-final")])
     graph = build_library_agent([], llm=llm).compile(checkpointer=MemorySaver())
     state: SsuAgentState = {
         "messages": [HumanMessage(content="도서관 좌석 알려줘")],
@@ -579,6 +579,7 @@ async def test_library_empty_final_content_uses_fallback():
     result = await graph.ainvoke(state, config={"configurable": {"thread_id": "lib-empty-1"}})
 
     assert result["messages"][-1].content == EMPTY_RESPONSE_FALLBACK
+    assert result["messages"][-1].id != "library-blank-final"
 
 
 @pytest.mark.asyncio
