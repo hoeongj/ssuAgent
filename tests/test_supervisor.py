@@ -283,7 +283,21 @@ def test_deterministic_route_exact_library_transcript() -> None:
         _deterministic_route(
             {
                 "messages": [
-                    AIMessage(content="도서관 예약을 진행할 열람실이나 좌석 선호가 있나요?"),
+                    AIMessage(content="[도서관 에이전트] 몇 층 좌석을 원하세요?"),
+                    HumanMessage(content="2층"),
+                ],
+                "mcp_session_id": "sess-1",
+                "library_connected": True,
+                "active_agent": None,
+            }
+        )
+        == "library_agent"
+    )
+    assert (
+        _deterministic_route(
+            {
+                "messages": [
+                    AIMessage(content="[도서관 에이전트] 열람실이나 좌석 선호가 있나요?"),
                     HumanMessage(content="그냥 아무대나"),
                 ],
                 "mcp_session_id": "sess-1",
@@ -292,6 +306,34 @@ def test_deterministic_route_exact_library_transcript() -> None:
             }
         )
         == "library_agent"
+    )
+
+
+@pytest.mark.parametrize(
+    ("ai_text", "follow_up"),
+    [
+        ("어느 시설을 찾으세요?", "학생회관"),
+        ("[LMS 에이전트] 어떤 과목의 자료를 원하세요?", "자료구조요"),
+        ("[학사 에이전트] 어느 학기를 원하세요?", "지난학기요"),
+    ],
+)
+def test_deterministic_route_ignores_non_library_clarification_followups(
+    ai_text: str,
+    follow_up: str,
+) -> None:
+    assert (
+        _deterministic_route(
+            {
+                "messages": [
+                    AIMessage(content=ai_text),
+                    HumanMessage(content=follow_up),
+                ],
+                "mcp_session_id": "sess-1",
+                "library_connected": True,
+                "active_agent": None,
+            }
+        )
+        is None
     )
 
 

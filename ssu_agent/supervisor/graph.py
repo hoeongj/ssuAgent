@@ -284,10 +284,16 @@ def _is_library_reservation_clarification(text: str) -> bool:
     )
 
 
-def _is_library_awaiting_user_input(text: str) -> bool:
-    if not text or any(marker in text for marker in _LIBRARY_COMPLETED_OUTCOME_MARKERS):
+def _is_library_awaiting_user_input(raw_text: str) -> bool:
+    if not raw_text:
         return False
-    return bool(_LIBRARY_LOGIN_GATE_RE.search(text)) or _is_library_reservation_clarification(text)
+    text = _strip_library_agent_prefix(raw_text)
+    if any(marker in text for marker in _LIBRARY_COMPLETED_OUTCOME_MARKERS):
+        return False
+    if _LIBRARY_LOGIN_GATE_RE.search(text):
+        return True
+    from_library = raw_text.strip().startswith("[도서관 에이전트]")
+    return from_library and _is_library_reservation_clarification(text)
 
 
 def _deterministic_route(state: SsuAgentState) -> str | None:
@@ -303,7 +309,7 @@ def _deterministic_route(state: SsuAgentState) -> str | None:
     if any(keyword in user_text for keyword in _LIBRARY_ROUTE_KEYWORDS):
         return "library_agent"
 
-    ai_text = _strip_library_agent_prefix(_last_ai_message_text(messages))
+    ai_text = _last_ai_message_text(messages)
     if len(user_text) <= _LIBRARY_CONTINUATION_MAX_CHARS and _is_library_awaiting_user_input(
         ai_text
     ):
