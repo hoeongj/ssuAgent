@@ -201,9 +201,12 @@ non-OK `userMessage` 노출은
 
 ## Addendum: tagged final-answer boundaries
 
-Claude assistant message content can also arrive as content-block lists, not only
-plain strings. Every boundary that stringifies assistant content must flatten
+Provider assistant message content can also arrive as content-block lists, not
+only plain strings. Every boundary that stringifies assistant content must flatten
 those blocks first, including tagged final answers as well as tool results. When
 a tagged final answer is derived from a model message, it keeps the model
 message id so the SSE stream can de-duplicate the chain copy after token
 streaming has already delivered the same answer.
+
+> 갱신 (2026-07-12): 빈 응답 fallback이 적용된 tagged answer만 fresh id를 쓰는
+> 예외가 생겼다. 일반 답변의 id 재사용은 유지된다. 자세한 경계는 ADR 0019를 참조한다.
