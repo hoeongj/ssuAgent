@@ -25,7 +25,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 
 from ssu_agent.supervisor.state import SsuAgentState
-from ssu_agent.tool_results import sanitize_tool_pairing, tool_result_to_text
+from ssu_agent.tool_results import content_to_text, sanitize_tool_pairing, tool_result_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -188,8 +188,10 @@ async def run_react_loop(
                 ),
                 None,
             )
+            text = content_to_text(last_ai.content) if last_ai else ""
             tagged = AIMessage(
-                content=f"[{tag}] {last_ai.content}" if last_ai else f"[{tag}] 처리 완료"
+                content=f"[{tag}] {text}" if text.strip() else f"[{tag}] 처리 완료",
+                id=last_ai.id if last_ai else None,
             )
             return {"messages": [tagged], "active_agent": None}
         except Exception as exc:

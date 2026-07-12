@@ -14,11 +14,17 @@ import json
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from ssu_agent.tool_results import sanitize_tool_pairing, tool_result_to_text
+from ssu_agent.tool_results import content_to_text, sanitize_tool_pairing, tool_result_to_text
 
 
 def test_str_passthrough():
     assert tool_result_to_text("hello") == "hello"
+
+
+def test_content_to_text_reuses_tool_result_flattening():
+    assert content_to_text([{"type": "text", "text": "assistant text", "index": 0}]) == (
+        "assistant text"
+    )
 
 
 def test_block_list_single_text_block():
