@@ -83,7 +83,8 @@ curl -N -X POST http://localhost:8000/agent/stream \
 | 환경변수 | 기본값 | 역할 |
 |---|---|---|
 | `ALLOWED_ORIGINS` | `*` (전체 허용) | CORS allow-list. 콤마로 구분한 origin 목록(`config.py`에서 파싱 → `main.py` `CORSMiddleware`). 단일 `*`이면 기존처럼 전체 허용. 실제 프론트엔드 origin으로 좁히면 CORS 보호가 활성화된다. |
-| `AGENT_API_KEY` | 비어 있음(게이트 off) | `/agent/*` 엔드포인트의 **opt-in** API 키 게이트(`main.py`의 `verify_agent_key` 의존성). 비어 있으면 no-op(기존 prod 동작 그대로). 설정하면 모든 `/agent` 요청이 일치하는 `X-Agent-Key` 헤더를 보내야 하며(`secrets.compare_digest`로 타이밍 공격 방어), 없거나 틀리면 401. |
+| `AGENT_API_KEY` | 비어 있음(로컬 게이트 off) | `/agent/*`의 `X-Agent-Key` 자격증명. 운영에서는 필수이며 ssuAI 서버 프록시의 값과 일치해야 함. 설정하면 `secrets.compare_digest`로 검증하고 없거나 틀리면 401. |
+| `AGENT_API_KEY_REQUIRED` | `false` | `true`인데 `AGENT_API_KEY`가 비어 있으면 시작을 거부. 운영 Helm 값은 `true`, 로컬 개발만 `false` 허용. |
 | `AGENT_RATE_LIMIT` | `30/minute` | `/agent/stream`·`/agent/resume`의 per-IP 인바운드 rate limit(slowapi 문법, `main.py`의 `limiter`). 키는 X-Forwarded-For 좌측 홉(ingress 뒤 실클라이언트 IP). 초과 시 429. 배경은 ADR 0009. |
 | `AGENT_MAX_MESSAGE_CHARS` | `8000` | 단일 요청 `message`의 최대 문자 수(pydantic `Field(max_length=…)`). 초과 시 422(oversized-payload 가드, ADR 0009). |
 | LLM 키 | — | `GROQ_API_KEY`/`GOOGLE_API_KEY`/`OPENROUTER_API_KEY` 중 설정된 것만 폴백 시퀀스에 포함(위 Architecture 참조). |

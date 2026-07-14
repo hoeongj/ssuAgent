@@ -97,17 +97,17 @@ graph TD
 kubectl create secret generic ssuagent-secrets \
   --namespace ssuai-prod \
   --from-literal=GOOGLE_API_KEY="your-gemini-api-key" \
+  --from-literal=AGENT_API_KEY="use-the-same-random-value-as-ssuAI" \
   --from-literal=DATABASE_URL="postgresql://ssuai:your-db-password@postgres-service:5432/ssuai"
 ```
 *주의: `DATABASE_URL` 내의 DB 패스워드는 `ssuai-backend-secrets`에 설정된 `SSUAI_DB_PASSWORD` 값과 일치해야 합니다.*
 
-선택(옵션) 키 — 같은 Secret에 `--from-literal`로 추가하면 Deployment의 `envFrom`이 자동 주입합니다(차트 수정 불필요):
+추가 선택 키 — 같은 Secret에 `--from-literal`로 추가하면 Deployment의 `envFrom`이 자동 주입합니다(차트 수정 불필요):
 
 | 키 | 역할 |
 |---|---|
 | `GROQ_API_KEY` | LLM 폴백 1순위(Groq llama-3.3-70b-versatile). 미설정 시 해당 프로바이더는 폴백 체인에서 제외됩니다(ADR 004 갱신 참조). |
 | `OPENROUTER_API_KEY` | LLM 폴백 3순위(OpenRouter catch-all). 미설정 시 체인에서 제외. |
-| `AGENT_API_KEY` | `/agent/*` opt-in API 키 게이트. 설정 시 모든 `/agent` 요청에 일치하는 `X-Agent-Key` 헤더가 필요합니다(ADR 0009). |
 
 ### 2. DNS A 레코드 등록
 `ssuagent.duckdns.org` 도메인 명의 트래픽이 k3s 트래픽을 처리하는 Public Gateway IP(`168.110.104.199`)로 도달할 수 있도록 DuckDNS 혹은 해당 네임서버에 A 레코드를 매핑해야 합니다.

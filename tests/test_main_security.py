@@ -117,14 +117,30 @@ class _FakeResumeGraph:
         raise AssertionError("resume must not call aupdate_state before Command(resume=...)")
 
 
-# ── No key configured → gate is a no-op (prod behavior preserved) ───────────────
+# ── Local no-key mode and production fail-closed startup ───────────────────────
 
 
 def test_stream_open_when_no_api_key(monkeypatch: pytest.MonkeyPatch, client: TestClient):
     monkeypatch.setattr(config, "AGENT_API_KEY", "")
+    monkeypatch.setattr(config, "AGENT_API_KEY_REQUIRED", False)
     resp = _post_stream(client)
     assert resp.status_code == 200
     assert "done" in resp.text
+
+
+def test_security_config_rejects_missing_required_api_key(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(config, "AGENT_API_KEY", "")
+    monkeypatch.setattr(config, "AGENT_API_KEY_REQUIRED", True)
+
+    with pytest.raises(RuntimeError, match="AGENT_API_KEY is required"):
+        main._validate_security_config()
+
+
+def test_security_config_accepts_configured_required_api_key(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(config, "AGENT_API_KEY", "configured-secret")
+    monkeypatch.setattr(config, "AGENT_API_KEY_REQUIRED", True)
+
+    main._validate_security_config()
 
 
 def test_health_open(client: TestClient):

@@ -192,6 +192,7 @@ def _handoff_payload(agent: str) -> dict[str, str]:
 async def _lifespan(app: FastAPI):
     """FastAPI lifespan: open Postgres connection pool, build graph, keep alive."""
     global _graph, _pool
+    _validate_security_config()
     async with AsyncConnectionPool(
         conninfo=config.DATABASE_URL,
         # Pool ceiling ~= concurrent streams x checkpointer ops. Five fits the
@@ -209,6 +210,12 @@ async def _lifespan(app: FastAPI):
         finally:
             _graph = None
             _pool = None
+
+
+def _validate_security_config() -> None:
+    """Fail startup when production requires the trusted proxy key but it is absent."""
+    if config.AGENT_API_KEY_REQUIRED and not config.AGENT_API_KEY:
+        raise RuntimeError("AGENT_API_KEY is required when AGENT_API_KEY_REQUIRED=true")
 
 
 async def _setup_thread_owners(pool: AsyncConnectionPool) -> None:
@@ -248,10 +255,11 @@ app.add_middleware(
 
 
 async def verify_agent_key(x_agent_key: str | None = Header(default=None)) -> None:
-    """Opt-in API-key gate for /agent endpoints.
+    """API-key gate for /agent endpoints.
 
-    No-op when config.AGENT_API_KEY is empty (default — prod behavior unchanged).
-    When set, the request must carry an X-Agent-Key header equal to it.
+    Local development may leave the key empty only while the required flag is
+    disabled. Production validates the key at startup and every request must
+    carry a matching X-Agent-Key header.
     config is read live (not bound at import time) so the gate reflects the
     current env / test overrides. compare_digest guards against timing attacks;
     the `not x_agent_key` short-circuit avoids a TypeError when the header is
@@ -265,11 +273,11 @@ async def verify_agent_key(x_agent_key: str | None = Header(default=None)) -> No
 
 
 def _hash_principal(principal: str) -> str:
-    """One-way digest of a caller-supplied stable principal before it touches storage.
+    """One-way digest of a trusted-proxy stable principal before it touches storage.
 
     ssuMCP's get_auth_status deliberately never returns a raw student id (see ADR
     0011), so ssuAgent never derives `principal` itself — it only ever receives
-    whatever value a future caller chooses to send. Hashing it before it reaches
+    the value supplied by the authenticated ssuAI proxy. Hashing it before it reaches
     `thread_owners` means a DB dump never reveals the plaintext subject, while
     equality comparisons (the only operation ownership binding needs) still work
     identically on the digest.

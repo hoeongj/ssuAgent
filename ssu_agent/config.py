@@ -23,10 +23,15 @@ ALLOWED_ORIGINS: list[str] = [
     if origin.strip()
 ]
 
-# Optional API key gate for /agent endpoints. When empty (default), the gate
-# is a no-op so existing prod behavior is preserved; when set, requests must
-# send a matching X-Agent-Key header.
+# API key gate for /agent endpoints. Local development may leave it empty while
+# AGENT_API_KEY_REQUIRED is false. Production sets the required flag so a missing
+# key fails startup instead of exposing caller-asserted principal fields.
 AGENT_API_KEY: str = os.getenv("AGENT_API_KEY", "").strip()
+AGENT_API_KEY_REQUIRED: bool = os.getenv("AGENT_API_KEY_REQUIRED", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 # Per-IP inbound rate limit for /agent/* (slowapi syntax, e.g. "30/minute").
 # Mirrors ssuMCP ADR 0061: these endpoints fan out to paid LLM providers, so an

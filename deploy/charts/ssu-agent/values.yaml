@@ -8,6 +8,7 @@ nameOverride: ""
 fullnameOverride: ""
 env:
   ssumcpUrl: "https://ssumcp.duckdns.org/mcp"
+  agentApiKeyRequired: "true"
   # CORS allow-list for /agent/* (browser calls from the Vercel frontend). Was
   # unset -> config.py defaulted to "*"; pinned to the prod frontend origin to
   # match ssuMCP's SSUAI_FRONTEND_ORIGIN. ADR 0009 / S1.
@@ -15,11 +16,12 @@ env:
 secretRef:
   enabled: true
   name: ssuagent-secrets
-  optional: true
+  optional: false
 secretTemplate:
   enabled: false
   stringData:
     GOOGLE_API_KEY: "<replace-me>"
+    AGENT_API_KEY: "<same-random-value-as-ssuAI>"
     DATABASE_URL: "postgresql://ssuai:<db-password>@postgres-service:5432/ssuai"
 service:
   type: ClusterIP

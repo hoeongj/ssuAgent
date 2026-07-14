@@ -10,3 +10,4 @@ metadata:
 data:
   SSUMCP_URL: {{ .Values.env.ssumcpUrl | quote }}
   ALLOWED_ORIGINS: {{ .Values.env.allowedOrigins | quote }}
+  AGENT_API_KEY_REQUIRED: {{ .Values.env.agentApiKeyRequired | quote }}
