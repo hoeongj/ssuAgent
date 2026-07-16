@@ -23,7 +23,9 @@ from ssu_agent.agents.library import (
     _build_library_prompt,
     _confirm_result_message,
     _extract_action_id,
+    _format_public_seat_status,
     _has_pending_action,
+    _public_seat_status_floor,
     build_library_agent,
     inner_react_tools,
 )
@@ -37,7 +39,20 @@ from ssu_agent.supervisor.state import SsuAgentState
 def get_library_seat_status(floor: int, compact: bool | None = None) -> str:
     """인증 없는 공개 도서관 층별 좌석 현황."""
     return json.dumps(
-        {"floor": floor, "availableSeats": 17, "compact": compact},
+        {
+            "floor": floor,
+            "floorLabel": f"{floor}층",
+            "activeSeats": 20,
+            "availableSeats": 17,
+            "occupiedSeats": 3,
+            "reservedSeats": 0,
+            "outOfServiceSeats": 2,
+            "zones": [
+                {"label": "숭실멀티라운지(5F)", "available": 12},
+                {"label": "리클라이너(5F)", "available": 5},
+            ],
+            "compact": compact,
+        },
         ensure_ascii=False,
     )
 
@@ -248,6 +263,71 @@ def test_authenticated_prompt_never_contains_raw_session_instructions():
     assert "loginUrl" not in prompt
 
 
+@pytest.mark.parametrize(
+    ("message", "floor"),
+    [
+        ("도서관 5층 빈 자리 있어?", 5),
+        ("2 층 좌석 현황 알려줘", 2),
+        ("6층에 이용 가능한 좌석 남았어?", 6),
+        ("5층 자리 몇 개 남았어?", 5),
+        ("5층 빈자리 몇 개 있어?", 5),
+        ("5층 빈 좌석이 몇 석 있어요?", 5),
+    ],
+)
+def test_public_seat_status_floor_recognizes_supported_live_queries(message: str, floor: int):
+    assert _public_seat_status_floor(message) == floor
+
+
+def test_public_seat_status_floor_never_overrides_reservation_or_unspecified_floor():
+    rejected = [
+        "5층 빈자리 예약해줘",
+        "5층 빈자리 있으면 신청해줘",
+        "5층 빈자리 배정해줘",
+        "5층 빈자리 선점해줘",
+        "5층 빈자리 예약 가능하면 해줘",
+        "5층 빈자리 하나 확보해줘",
+        "5층 빈자리 있으면 예매해줘",
+        "도서관 빈자리 있어?",
+        "4층 빈자리 있어?",
+        "5층 좌석 몇 시까지 이용 가능해?",
+        "5층 좌석 몇 번이 콘센트 자리야?",
+        "5층 콘센트 좌석 있어?",
+        "5층 모니터 좌석 있어?",
+        "5층 빈자리 추천해줘",
+        "2층이랑 5층 빈자리 비교해줘",
+        "2층 말고 5층 빈자리 있어?",
+        "4층이나 5층 빈자리 있어?",
+        "5~6층 빈자리 있어?",
+        "5층 빈자리랑 대출 가능 권수 알려줘",
+        "5층 좌석 현황이랑 배치 알려줘",
+        "5층 좌석이 몇 개야?",
+        "5층 좌석 몇 석인가요?",
+        "5층 자리가 몇 개예요?",
+        "5층 좌석 몇 개 있어?",
+    ]
+    for message in rejected:
+        assert _public_seat_status_floor(message) is None, message
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"floor": 2, "availableSeats": 17},
+        {"floor": 5},
+        {"floor": 5, "availableSeats": -1},
+        {"floor": 5, "availableSeats": True},
+        {
+            "floor": 5,
+            "availableSeats": 1,
+            "zones": [{"label": "zone", "available": -1}],
+        },
+    ],
+)
+def test_public_seat_status_formatter_rejects_malformed_counts(payload: dict):
+    with pytest.raises(ValueError):
+        _format_public_seat_status(json.dumps(payload), requested_floor=5)
+
+
 # ── Integration: pre-LLM reservation auth gate ───────────────────────────────
 
 
@@ -383,22 +463,7 @@ async def test_non_reservation_without_session_still_invokes_llm():
 async def test_exact_floor_availability_query_uses_public_tool_without_login():
     from langgraph.checkpoint.memory import MemorySaver
 
-    llm = _MockLibraryLLM(
-        responses=[
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "id": "seat-status-5f",
-                        "name": "get_library_seat_status",
-                        "args": {"floor": 5, "compact": False},
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            AIMessage(content="5층에는 현재 빈 좌석이 17석 있어요."),
-        ]
-    )
+    llm = _SpyLibraryLLM(responses=[AIMessage(content="정적 카탈로그를 사용하면 안 됩니다.")])
     graph = build_library_agent(LIBRARY_TOOLS, llm=llm).compile(checkpointer=MemorySaver())
 
     result = await graph.ainvoke(
@@ -411,13 +476,102 @@ async def test_exact_floor_availability_query_uses_public_tool_without_login():
         config={"configurable": {"thread_id": "public-seat-status-5f"}},
     )
 
-    assert result["messages"][-1].content == "5층에는 현재 빈 좌석이 17석 있어요."
-    assert any(
-        '"availableSeats": 17' in message.content
-        for message in result["messages"]
-        if isinstance(message, ToolMessage)
+    assert result["messages"][-1].content == (
+        "5층에는 현재 이용 가능한 좌석이 17석 있어요.\n"
+        "운영 좌석 20석 · 사용 중 3석 · 예약 0석 · 사용 불가 2석입니다.\n"
+        "구역별 빈자리: 숭실멀티라운지(5F) 12석 · 리클라이너(5F) 5석"
     )
     assert "로그인" not in result["messages"][-1].content
+    assert llm.bind_tools_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_public_floor_availability_failure_never_falls_back_to_catalog_or_login():
+    from langgraph.checkpoint.memory import MemorySaver
+
+    @tool
+    def failing_library_seat_status(floor: int, compact: bool | None = None) -> str:
+        """인증 없는 공개 도서관 층별 좌석 현황."""
+        raise RuntimeError("provider body must not be shown")
+
+    failing_library_seat_status.name = "get_library_seat_status"
+    llm = _SpyLibraryLLM(responses=[AIMessage(content="빈자리가 있습니다.")])
+    graph = build_library_agent([failing_library_seat_status], llm=llm).compile(
+        checkpointer=MemorySaver()
+    )
+
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="2층 좌석 현황 알려줘")],
+            "mcp_session_id": None,
+            "library_connected": False,
+            "active_agent": "library",
+        },
+        config={"configurable": {"thread_id": "public-seat-status-failure"}},
+    )
+
+    assert result["messages"][-1].content == (
+        "2층 좌석 현황을 지금 불러오지 못했어요. 잠시 후 다시 시도해 주세요."
+    )
+    assert "로그인" not in result["messages"][-1].content
+    assert "provider body" not in result["messages"][-1].content
+    assert llm.bind_tools_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_conditional_seat_application_without_session_uses_reservation_auth_gate():
+    from langgraph.checkpoint.memory import MemorySaver
+
+    llm = _SpyLibraryLLM(responses=[AIMessage(content="should not be used")])
+    graph = build_library_agent(LIBRARY_TOOLS, llm=llm).compile(checkpointer=MemorySaver())
+
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="5층 빈자리 하나 확보해줘")],
+            "mcp_session_id": None,
+            "library_connected": False,
+            "active_agent": "library",
+        },
+        config={"configurable": {"thread_id": "conditional-reservation-disconnected"}},
+    )
+
+    assert result["messages"][-1].content == _LIBRARY_RESERVATION_LOGIN_MESSAGE
+    assert llm.bind_tools_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_conditional_seat_application_with_session_reaches_hitl_prepare_path():
+    from langgraph.checkpoint.memory import MemorySaver
+
+    llm = _MockLibraryLLM(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "conditional-prepare",
+                        "name": "prepare_reserve_library_seat",
+                        "args": {"seat_id": 42},
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        ]
+    )
+    graph = build_library_agent(LIBRARY_TOOLS, llm=llm).compile(checkpointer=MemorySaver())
+
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="5층 빈자리 있으면 예매해줘")],
+            "mcp_session_id": "sess-001",
+            "library_connected": True,
+            "active_agent": "library",
+        },
+        config={"configurable": {"thread_id": "conditional-reservation-connected"}},
+    )
+
+    assert "__interrupt__" in result
+    assert result["__interrupt__"][0].value["action_id"] == 99
 
 
 # ── Integration: HITL interrupt triggers on prepare result ────────────────────

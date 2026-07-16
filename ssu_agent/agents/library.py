@@ -112,9 +112,45 @@ _LIBRARY_AGENT_NAME = "library_agent"
 _RESERVATION_INTENT_RE = re.compile(
     r"\breserv(?:e|ation)\b"
     r"|예약\s*(?:해|해주세요|해줘|해줘요|부탁|진행|시켜|할래|하고\s*싶|하고싶|좀|해주|잡아)"
+    r"|(?:좌석|자리).*?(?:예약|신청|배정|선점|확보|예매)\s*(?:가능하면\s*)?"
+    r"(?:해|해주세요|해줘|해줘요|부탁|진행|시켜|할래|해주)"
     r"|좌석\s*.*(?:신청|배정|잡아|잡아줘|잡아주세요|잡고)"
     r"|자리\s*.*(?:잡아|잡아줘|잡아주세요|잡고|맡아|맡아줘|맡겨|맡길)",
     re.IGNORECASE,
+)
+_PUBLIC_SEAT_STATUS_QUERY_RE = re.compile(
+    r"""
+    ^\s*
+    (?:현재\s*)?
+    (?:(?:숭실(?:대학교|대)?\s*)?(?:중앙\s*)?도서관(?:의)?\s*)?
+    (?P<floor>\d+)\s*층(?:에|은|는|의)?\s*
+    (?:
+        (?:
+            빈\s*(?:자리|좌석)
+            |(?:이용|사용)\s*가능(?:한)?\s*(?:자리|좌석)
+        )(?:가|은|는|이)?\s*
+        (?:
+            있(?:어|어요|나요|니|습니까|나|을까요)?
+            |남(?:아\s*있(?:어|어요|나요|습니까)?|아|았어|았어요|았나요)?
+            |비(?:어|었어|었어요|었나요)
+            |몇\s*(?:석|개)\s*(?:
+                야|예요|인가요
+                |있(?:어|어요|나요|습니까)?
+                |남(?:아|았어|았어요|았나요)
+            )?
+            |(?:좀\s*)?(?:알려줘|알려주세요|확인해줘|확인해주세요|보여줘|보여주세요)
+        )
+        |(?:자리|좌석)(?:가|은|는|이)?\s*(?:
+            남(?:아\s*있(?:어|어요|나요|습니까)?|아|았어|았어요|았나요)?
+            |비(?:어|었어|었어요|었나요)
+            |몇\s*(?:석|개)\s*남(?:아|았어|았어요|았나요)
+        )
+        |좌석\s*현황(?:을)?
+        (?:\s*(?:좀\s*)?(?:알려줘|알려주세요|확인해줘|확인해주세요|보여줘|보여주세요))?
+    )
+    \s*[?!.~]*\s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 
 
@@ -129,6 +165,85 @@ def _last_human_message_text(messages: list) -> str:
 
 def _has_library_reservation_intent(text: str) -> bool:
     return bool(_RESERVATION_INTENT_RE.search(text))
+
+
+def _public_seat_status_floor(text: str) -> int | None:
+    """Return a supported floor for an explicit aggregate availability query.
+
+    Availability is a deterministic public read. Keeping this intent out of the
+    model's tool-selection step prevents a static seat catalog from being used as
+    evidence for live vacancy. Reservation wording always wins so a request such
+    as "5층 빈자리 예약해줘" still follows the authenticated HITL path.
+    """
+    if _has_library_reservation_intent(text):
+        return None
+    match = _PUBLIC_SEAT_STATUS_QUERY_RE.fullmatch(text)
+    if match is None:
+        return None
+    floor = int(match.group("floor"))
+    return floor if floor in {2, 5, 6} else None
+
+
+def _optional_nonnegative_count(data: dict, key: str) -> int | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"invalid {key}")
+    return value
+
+
+def _format_public_seat_status(raw_result: object, requested_floor: int) -> str:
+    """Format a live aggregate response without asking an LLM to infer vacancy."""
+    text = tool_result_to_text(raw_result)
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise ValueError("seat status response is not an object")
+    if isinstance(parsed.get("data"), dict):
+        parsed = parsed["data"]
+
+    floor = _optional_nonnegative_count(parsed, "floor")
+    available = _optional_nonnegative_count(parsed, "availableSeats")
+    if floor != requested_floor or available is None:
+        raise ValueError("seat status response is missing the requested floor")
+
+    floor_label = parsed.get("floorLabel")
+    if not isinstance(floor_label, str) or not floor_label.strip():
+        floor_label = f"{requested_floor}층"
+
+    if available > 0:
+        lines = [f"{floor_label}에는 현재 이용 가능한 좌석이 {available}석 있어요."]
+    else:
+        lines = [f"{floor_label}에는 현재 이용 가능한 좌석이 없어요."]
+
+    active = _optional_nonnegative_count(parsed, "activeSeats")
+    occupied = _optional_nonnegative_count(parsed, "occupiedSeats")
+    reserved = _optional_nonnegative_count(parsed, "reservedSeats")
+    out_of_service = _optional_nonnegative_count(parsed, "outOfServiceSeats")
+    if active is not None:
+        details = [f"운영 좌석 {active}석"]
+        if occupied is not None:
+            details.append(f"사용 중 {occupied}석")
+        if reserved is not None:
+            details.append(f"예약 {reserved}석")
+        if out_of_service is not None:
+            details.append(f"사용 불가 {out_of_service}석")
+        lines.append(" · ".join(details) + "입니다.")
+
+    zone_summaries: list[str] = []
+    zones = parsed.get("zones")
+    if isinstance(zones, list):
+        for zone in zones[:6]:
+            if not isinstance(zone, dict):
+                continue
+            label = zone.get("label")
+            zone_available = _optional_nonnegative_count(zone, "available")
+            if isinstance(label, str) and label.strip() and zone_available is not None:
+                zone_summaries.append(f"{label.strip()} {zone_available}석")
+    if zone_summaries:
+        lines.append("구역별 빈자리: " + " · ".join(zone_summaries))
+
+    return "\n".join(lines)
 
 
 def _library_turn_messages(messages: list) -> list:
@@ -566,7 +681,8 @@ def build_library_agent(
             _library_turn_messages(state["messages"]),
             mcp_session_id,
         )
-        reservation_intent = _has_library_reservation_intent(_last_human_message_text(messages))
+        latest_request = _last_human_message_text(messages)
+        reservation_intent = _has_library_reservation_intent(latest_request)
         library_connected = bool(state.get("library_connected"))
         if reservation_intent and not library_connected:
             return {
@@ -589,9 +705,37 @@ def build_library_agent(
                 "active_agent": None,
             }
 
+        model_tools = tools_for_model(agent_tools, mcp_session_id)
+        public_seat_floor = _public_seat_status_floor(latest_request)
+        if public_seat_floor is not None:
+            status_tool = next(
+                (tool for tool in model_tools if tool.name == "get_library_seat_status"),
+                None,
+            )
+            try:
+                if status_tool is None:
+                    raise LookupError("public seat status tool is unavailable")
+                result = await status_tool.ainvoke(
+                    {"floor": public_seat_floor, "compact": False},
+                    config=config,
+                )
+                message = _format_public_seat_status(result, public_seat_floor)
+            except Exception as tool_exc:
+                logger.warning(
+                    "library public seat status failed: type=%s",
+                    type(tool_exc).__name__,
+                )
+                message = (
+                    f"{public_seat_floor}층 좌석 현황을 지금 불러오지 못했어요. "
+                    "잠시 후 다시 시도해 주세요."
+                )
+            return {
+                "messages": [AIMessage(content=message, name=_LIBRARY_AGENT_NAME)],
+                "active_agent": None,
+            }
+
         prompt = _build_library_prompt(bool(mcp_session_id))
         input_messages = sanitize_tool_pairing([SystemMessage(content=prompt), *messages])
-        model_tools = tools_for_model(agent_tools, mcp_session_id)
 
         last_exc: Exception | None = None
         for _llm in llm_seq:
