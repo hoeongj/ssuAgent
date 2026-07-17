@@ -165,6 +165,48 @@ def test_history_redaction_is_non_mutating_and_preserves_domain_data():
     assert assistant.tool_calls[0]["args"]["mcp_session_id"] == session_id
 
 
+def test_model_history_redacts_lms_download_capability_but_keeps_link_label():
+    capability_url = (
+        "https://ssumcp.duckdns.org/api/lms/exports/job-1/download?token=secret-download-token"
+    )
+    assistant = AIMessage(content=f"[강의 파일 다운로드]({capability_url})")
+
+    [safe] = sanitize_messages_for_model([assistant])
+
+    assert "강의 파일 다운로드" in safe.content
+    assert capability_url not in safe.content
+    assert "secret-download-token" not in safe.content
+    assert capability_url in assistant.content
+
+
+def test_current_tool_result_keeps_lms_capability_for_local_terminal_formatter():
+    capability_url = (
+        "https://ssumcp.duckdns.org/api/lms/exports/job-1/download?token=secret-download-token"
+    )
+    content = json.dumps({"status": "OK", "data": {"downloadUrl": capability_url}})
+
+    safe = sanitize_tool_result_for_model(content)
+
+    assert json.loads(safe)["data"]["downloadUrl"] == capability_url
+
+
+def test_model_history_redacts_lms_capability_from_tool_messages():
+    capability_url = (
+        "https://ssumcp.duckdns.org/api/lms/exports/job-1/download?token=secret-download-token"
+    )
+    result = ToolMessage(
+        content=json.dumps({"status": "OK", "data": {"downloadUrl": capability_url}}),
+        tool_call_id="confirm-1",
+    )
+
+    [safe] = sanitize_messages_for_model([result])
+
+    assert capability_url not in safe.content
+    assert "secret-download-token" not in safe.content
+    assert "download capability redacted" in safe.content
+    assert capability_url in result.content
+
+
 def test_internal_auth_guidance_detects_raw_auth_url():
     assert contains_internal_auth_guidance("/api/mcp/auth/lms/start?state=private-state")
 

@@ -97,6 +97,12 @@ def confirm_lms_material_export(mcp_session_id: str) -> str:
     return '{"downloadUrl": "https://example.com/download"}'
 
 
+@tool
+def export_all_lms_materials(mcp_session_id: str) -> str:
+    """전체 수강 과목의 비영상 자료 내보내기 준비"""
+    return '{"status": "OK", "data": {"fileCount": 74}}'
+
+
 MOCK_TOOLS = [
     get_today_meal,
     get_my_grades,
@@ -110,6 +116,7 @@ MOCK_TOOLS = [
     get_my_lms_materials,
     prepare_lms_material_export,
     confirm_lms_material_export,
+    export_all_lms_materials,
 ]
 
 
@@ -142,6 +149,7 @@ def test_categorise_splits_lms_tools():
     assert "get_my_lms_materials" in lms_names
     assert "prepare_lms_material_export" in lms_names  # THE BUG FIX TEST
     assert "confirm_lms_material_export" in lms_names
+    assert "export_all_lms_materials" in lms_names
 
     # Library tools must NOT be mis-routed
     assert "prepare_reserve_library_seat" in library_names
@@ -155,6 +163,7 @@ def test_categorise_public_tools():
     cats = categorise_tools(MOCK_TOOLS)
     pub_names = {t.name for t in cats["public"]}
     assert "get_today_meal" in pub_names
+    assert "export_all_lms_materials" not in pub_names
 
 
 def test_categorise_auth_tools():
@@ -367,6 +376,57 @@ def test_deterministic_route_exact_library_transcript() -> None:
             }
         )
         == "library_agent"
+    )
+
+
+@pytest.mark.parametrize(
+    "message_text",
+    [
+        "LMS 대시보드 보여줘",
+        "LMS에서 이번 주 과제 보여줘",
+        "지금 수강중인 수업 모든 강의 파일을 다운받고 싶어",
+    ],
+)
+def test_deterministic_route_sends_clear_lms_requests_to_lms_agent(message_text: str) -> None:
+    assert (
+        _deterministic_route(
+            {
+                "messages": [HumanMessage(content=message_text)],
+                "mcp_session_id": "sess-1",
+                "library_connected": False,
+                "active_agent": None,
+            }
+        )
+        == "lms_agent"
+    )
+
+
+@pytest.mark.parametrize(
+    "message_text",
+    [
+        "도서관 빈자리랑 이번 주 과제 같이 알려줘",
+        "졸업 과제 기준 알려줘",
+        "오늘 학식이랑 과제 마감 알려줘",
+        "시간표랑 이번 주 과제 같이 알려줘",
+        "등록금이랑 LMS 과제 알려줘",
+        "과제 잘하는 법",
+        "학교 공지랑 과제 마감",
+        "대출 도서와 과제",
+    ],
+)
+def test_deterministic_lms_route_leaves_mixed_domains_to_supervisor(
+    message_text: str,
+) -> None:
+    assert (
+        _deterministic_route(
+            {
+                "messages": [HumanMessage(content=message_text)],
+                "mcp_session_id": "sess-1",
+                "library_connected": True,
+                "active_agent": None,
+            }
+        )
+        is None
     )
 
 

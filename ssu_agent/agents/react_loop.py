@@ -1,5 +1,5 @@
 """
-Shared manual bind_tools ReAct loop for the read-only sub-agents.
+Shared manual bind_tools ReAct loop for the academic and LMS sub-agents.
 
 The academic and LMS sub-agents run the identical loop — bind the tools, let
 the model call them for up to N turns, then return one tagged answer — differing
@@ -16,8 +16,10 @@ agent (see the library agent's module docstring for the A/B detail).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+from collections.abc import Callable
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -46,6 +48,7 @@ _AGENT_NAMES_BY_TAG = {
     "도서관 에이전트": "library_agent",
     "LMS 에이전트": "lms_agent",
 }
+TerminalToolResultFormatter = Callable[[str, str], str | None]
 
 
 def _provider_label(llm: BaseChatModel) -> str:
@@ -82,6 +85,30 @@ async def _run_tool_call(
         content = "Tool error: upstream tool failed."
     logger.info("tool %s finished in %.2fs", name, time.perf_counter() - started)
     return ToolMessage(content=content, tool_call_id=call_id)
+
+
+async def _run_tool_call_with_batch_policy(
+    tc: dict,
+    tools: list[BaseTool],
+    config: RunnableConfig,
+    mcp_session_id: str | None,
+    *,
+    defer_standalone: bool,
+) -> ToolMessage:
+    """Reject a standalone-only call when the model batches it with dependencies."""
+    if defer_standalone:
+        name = str(tc.get("name", ""))
+        logger.warning("tool %s deferred because it must run in a standalone turn", name)
+        return ToolMessage(
+            content=json.dumps(
+                {
+                    "status": "INVALID_TOOL_SEQUENCE",
+                    "message": "Call this tool alone after the preceding tool result is available.",
+                }
+            ),
+            tool_call_id=str(tc.get("id", "")),
+        )
+    return await _run_tool_call(tc, tools, config, mcp_session_id)
 
 
 def drop_routing_messages(messages: list) -> list:
@@ -229,12 +256,20 @@ async def run_react_loop(
     state: SsuAgentState,
     config: RunnableConfig,
     auth_required_message: str | None = None,
+    terminal_tool_result_formatter: TerminalToolResultFormatter | None = None,
+    standalone_tool_names: set[str] | None = None,
 ) -> dict:
     """Run the bind_tools ReAct loop with per-provider fallback.
 
     Tries each LLM in ``llm_seq`` in order; on any provider error it advances to
     the next. Returns a single ``[{tag} ...]``-tagged AIMessage and clears
-    ``active_agent`` so control returns to the supervisor.
+    ``active_agent`` so control returns to the supervisor. A domain may provide
+    ``terminal_tool_result_formatter`` when a successful tool result already
+    contains the complete user answer; this avoids a redundant model round and
+    checkpoints the result before the browser stream deadline. Tools named in
+    ``standalone_tool_names`` are not executed when a model batches them with
+    another call; the model receives a sequence error and may retry after the
+    dependency result is available.
     """
     messages = sanitize_messages_for_model(
         latest_turn_messages(
@@ -287,18 +322,22 @@ async def run_react_loop(
                     len(response.tool_calls),
                     [tc.get("name") for tc in response.tool_calls],
                 )
+                standalone_batch = len(response.tool_calls) > 1
                 tool_messages = await asyncio.gather(
                     *(
-                        _run_tool_call(
+                        _run_tool_call_with_batch_policy(
                             tc,
                             tools,
                             config,
                             state.get("mcp_session_id"),
+                            defer_standalone=(
+                                standalone_batch
+                                and tc.get("name") in (standalone_tool_names or set())
+                            ),
                         )
                         for tc in response.tool_calls
                     )
                 )
-                history.extend(tool_messages)
                 if auth_required_message and any(
                     auth_denial_status(content_to_text(message.content)) is not None
                     for message in tool_messages
@@ -307,6 +346,49 @@ async def run_react_loop(
                         "messages": [AIMessage(content=f"[{tag}] {auth_required_message}")],
                         "active_agent": None,
                     }
+
+                if terminal_tool_result_formatter is not None:
+                    for tool_call, tool_message in zip(
+                        response.tool_calls,
+                        tool_messages,
+                        strict=True,
+                    ):
+                        try:
+                            terminal_text = terminal_tool_result_formatter(
+                                str(tool_call.get("name", "")),
+                                content_to_text(tool_message.content),
+                            )
+                        except Exception as formatter_exc:
+                            logger.warning(
+                                "[%s] terminal tool formatter failed: type=%s",
+                                tag,
+                                type(formatter_exc).__name__,
+                            )
+                            continue
+                        if terminal_text:
+                            logger.info(
+                                "[%s] provider=%s turn=%d terminal tool result",
+                                tag,
+                                provider,
+                                turn,
+                            )
+                            return {
+                                "messages": [
+                                    AIMessage(
+                                        content=f"[{tag}] {terminal_text}",
+                                        id=None,
+                                        name=_AGENT_NAMES_BY_TAG.get(tag),
+                                    )
+                                ],
+                                "active_agent": None,
+                            }
+
+                history.extend(
+                    sanitize_messages_for_model(
+                        list(tool_messages),
+                        state.get("mcp_session_id"),
+                    )
+                )
 
             apply_empty_response_fallback(history[len(input_messages) :])
             last_ai = next(

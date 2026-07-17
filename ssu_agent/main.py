@@ -164,6 +164,7 @@ _TOOL_LABELS: dict[str, str] = {
     "get_my_lms_materials": "강의자료 조회 중...",
     "get_my_lms_terms": "학기 목록 조회 중...",
     "get_lms_dashboard": "LMS 대시보드 조회 중...",
+    "export_all_lms_materials": "전체 강의자료 내보내기 준비 중...",
     "prepare_lms_material_export": "강의자료 내보내기 준비 중...",
     "confirm_lms_material_export": "강의자료 내보내기 확정 중...",
     # 학사일정 · 학칙/졸업/장학 근거

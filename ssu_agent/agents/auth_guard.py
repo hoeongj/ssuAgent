@@ -72,6 +72,11 @@ _SESSION_DESCRIPTION_RE = re.compile(
     r"mcp_session_id|mcpSessionId|MCP\s+session\s+ID",
     re.IGNORECASE,
 )
+_LMS_EXPORT_CAPABILITY_URL_RE = re.compile(
+    r"https?://[^\s`\"'<>()]+/api/lms/exports/[^/\s`\"'<>()]+/download\?"
+    r"(?=[^\s`\"'<>()]*\btoken=)[^\s`\"'<>()]+",
+    re.IGNORECASE,
+)
 _AUTH_STATUS_TIMEOUT_SECONDS = 5.0
 
 
@@ -204,6 +209,11 @@ def redact_internal_auth_artifacts(text: str, mcp_session_id: str | None = None)
     return redacted
 
 
+def _redact_model_capability_urls(text: str) -> str:
+    """Hide bearer-style download URLs only when copying history to a model."""
+    return _LMS_EXPORT_CAPABILITY_URL_RE.sub("[download capability redacted]", text)
+
+
 def _sanitize_nested_auth(value: Any, mcp_session_id: str | None) -> Any:
     if isinstance(value, str):
         stripped = value.strip()
@@ -217,7 +227,7 @@ def _sanitize_nested_auth(value: Any, mcp_session_id: str | None) -> Any:
                     _sanitize_nested_auth(parsed, mcp_session_id),
                     ensure_ascii=False,
                 )
-        return redact_internal_auth_artifacts(value, mcp_session_id)
+        return _redact_model_capability_urls(redact_internal_auth_artifacts(value, mcp_session_id))
     if isinstance(value, list):
         return [_sanitize_nested_auth(item, mcp_session_id) for item in value]
     if not isinstance(value, dict):
@@ -247,12 +257,13 @@ def sanitize_messages_for_model(
         if isinstance(message, ToolMessage):
             if message.tool_call_id in auth_call_ids:
                 continue
-            content = tool_result_to_text(message.content)
-            sanitized.append(
-                message.model_copy(
-                    update={"content": sanitize_tool_result_for_model(content, mcp_session_id)}
+            content = _redact_model_capability_urls(
+                sanitize_tool_result_for_model(
+                    tool_result_to_text(message.content),
+                    mcp_session_id,
                 )
             )
+            sanitized.append(message.model_copy(update={"content": content}))
             continue
 
         if isinstance(message, AIMessage):

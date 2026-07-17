@@ -121,6 +121,7 @@ _LMS_NAMES = {
     "get_my_lms_materials",
     "prepare_lms_material_export",
     "confirm_lms_material_export",
+    "export_all_lms_materials",
 }
 _AUTH_NAMES = {"start_auth", "get_auth_status", "logout_provider", "logout_all"}
 
@@ -193,6 +194,33 @@ def _make_routing_tools() -> list[BaseTool]:
 
 _ROUTE_RE = re.compile(r"ROUTE_TO:(\w+)")
 _LIBRARY_ROUTE_KEYWORDS = ("도서관", "열람실", "좌석")
+_LMS_DIRECT_ROUTE_RE = re.compile(
+    r"(?<![A-Za-z0-9])lms(?![A-Za-z0-9])|(?:강의|수업)\s*(?:파일|자료)"
+    r"|(?:강의|수업).{0,12}(?:다운|내려받)"
+    r"|(?:다운|내려받).{0,12}(?:강의|수업)",
+    re.IGNORECASE,
+)
+_LMS_DIRECT_ROUTE_CONFLICTS = (
+    "도서관",
+    "열람실",
+    "좌석",
+    "예약",
+    "성적",
+    "졸업",
+    "학점",
+    "시간표",
+    "등록금",
+    "장학",
+    "채플",
+    "학식",
+    "식단",
+    "메뉴",
+    "공지",
+    "도서",
+    "대출",
+    "캠퍼스",
+    "시설",
+)
 _LIBRARY_CONTINUATION_MAX_CHARS = 20
 _LIBRARY_AGENT_PREFIX_RE = re.compile(r"^\s*\[도서관 에이전트\]\s*")
 _LIBRARY_LOGIN_GATE_RE = re.compile(
@@ -245,9 +273,9 @@ _SUPERVISOR_PROMPT = """당신은 숭실대학교 AI 어시스턴트입니다.
 
 LMS 강의자료 내보내기 플로우 안내:
 사용자가 LMS 강의자료 다운로드나 내보내기를 요청하면 transfer_to_lms_agent로
-전달하십시오. 해당 에이전트는 다음 단계를 거칩니다:
-get_my_lms_courses → get_my_lms_materials → prepare_lms_material_export
-→ confirm_lms_material_export → 다운로드 링크 제공 (유효기간 20분).
+전달하십시오. 전체 과목·모든 자료 요청은 export_all_lms_materials →
+confirm_lms_material_export로 처리하고, 특정 과목 요청은 get_my_lms_courses →
+prepare_lms_material_export → confirm_lms_material_export로 처리합니다.
 
 전달 시 가장 최근 사용자 질문을 query에 그대로 포함하세요. 과거에 끝난 다른 요청이나 답변을
 다시 요약하지 마세요. 현재 질문이 짧은 후속 표현일 때만 함께 제공된 직전 하위 에이전트 답변을
@@ -326,11 +354,16 @@ def _is_library_awaiting_user_input(raw_text: str) -> bool:
 
 
 def _deterministic_route(state: SsuAgentState) -> str | None:
-    """Conservatively pre-route obvious library turns before the LLM supervisor."""
+    """Conservatively pre-route obvious library or LMS turns before the supervisor."""
     messages = state.get("messages", [])
     user_text = _latest_human_message_text(messages).strip()
     if not user_text:
         return None
+
+    if _LMS_DIRECT_ROUTE_RE.search(user_text) and not any(
+        keyword in user_text for keyword in _LMS_DIRECT_ROUTE_CONFLICTS
+    ):
+        return "lms_agent"
 
     if any(keyword in user_text for keyword in _STRONG_OTHER_DOMAIN_KEYWORDS):
         return None
@@ -476,7 +509,11 @@ async def build_supervisor_graph(
     builder.add_conditional_edges(
         START,
         route_from_start,
-        {"library_agent": "library_agent", "supervisor": "supervisor"},
+        {
+            "library_agent": "library_agent",
+            "lms_agent": "lms_agent",
+            "supervisor": "supervisor",
+        },
     )
     builder.add_edge("supervisor", "post_supervisor")
 

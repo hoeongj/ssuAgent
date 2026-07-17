@@ -313,6 +313,46 @@ async def test_loop_is_bounded_by_max_tool_turns():
 
 
 @pytest.mark.asyncio
+async def test_terminal_tool_result_skips_an_extra_model_round():
+    calls = {"n": 0}
+
+    @tool
+    async def create_download() -> str:
+        """Create a browser download URL."""
+        calls["n"] += 1
+        return '{"downloadUrl":"https://example.com/download?token=test"}'
+
+    llm = _SeqLLM(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "create_download", "args": {}, "id": "download-1"}],
+            )
+        ]
+    )
+
+    result = await run_react_loop(
+        [llm],
+        [create_download],
+        "시스템",
+        "테스트",
+        _state(),
+        {},
+        terminal_tool_result_formatter=lambda name, _content: (
+            "[파일 다운로드](https://example.com/download?token=test)"
+            if name == "create_download"
+            else None
+        ),
+    )
+
+    assert calls["n"] == 1
+    assert result["messages"][-1].content == (
+        "[테스트] [파일 다운로드](https://example.com/download?token=test)"
+    )
+    assert result["messages"][-1].id is None
+
+
+@pytest.mark.asyncio
 async def test_empty_final_content_uses_fallback():
     llm = _SeqLLM(responses=[AIMessage(content=" \n ", id="blank-final")])
 
