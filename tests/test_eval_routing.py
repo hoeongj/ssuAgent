@@ -22,6 +22,9 @@ prefix mismatch, or an unregistered transfer tool; this test can.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
@@ -35,6 +38,17 @@ from ssu_agent.supervisor.graph import (
     _post_supervisor,
 )
 from ssu_agent.supervisor.state import SsuAgentState
+
+_EVAL_PATH = Path(__file__).parents[1] / "evals" / "routing_contract.v1.json"
+
+
+def _load_eval() -> dict:
+    return json.loads(_EVAL_PATH.read_text(encoding="utf-8"))
+
+
+_EVAL = _load_eval()
+_ROUTE_CASES = [case for case in _EVAL["cases"] if case["expected"]["mode"] == "route"]
+_DIRECT_CASES = [case for case in _EVAL["cases"] if case["expected"]["mode"] == "direct"]
 
 # ── Fake tool-calling supervisor LLM ──────────────────────────────────────────
 
@@ -82,22 +96,17 @@ async def _run_supervisor(responses: list[AIMessage], query: str) -> SsuAgentSta
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("query", "tool_name", "expected_agent"),
-    [
-        ("도서관 자리 잡아줘", "transfer_to_library_agent", "library_agent"),
-        ("빈 좌석 알려줘", "transfer_to_library_agent", "library_agent"),
-        ("장학금 기준 알려줘", "transfer_to_academic_agent", "academic_agent"),
-        ("졸업요건 확인해줘", "transfer_to_academic_agent", "academic_agent"),
-        ("LMS 과제 확인해줘", "transfer_to_lms_agent", "lms_agent"),
-        ("강의 자료 내려받아줘", "transfer_to_lms_agent", "lms_agent"),
-    ],
+    "case",
+    _ROUTE_CASES,
+    ids=[case["id"] for case in _ROUTE_CASES],
 )
-async def test_eval_routing_tool_drives_correct_node(
-    query: str, tool_name: str, expected_agent: str
-) -> None:
+async def test_eval_routing_tool_drives_correct_node(case: dict) -> None:
     """When the LLM calls a transfer tool, the real ReAct + parser chain routes to
     the matching sub-agent node. Fails if the routing tool emits the wrong marker,
     the prefix drifts, or the tool is not registered on the supervisor."""
+    query = case["query"]
+    tool_name = case["expected"]["tool"]
+    expected_agent = case["expected"]["agent"]
     state = await _run_supervisor(
         [_transfer_call(tool_name, query), AIMessage(content="라우팅 완료")], query
     )
@@ -118,17 +127,15 @@ async def test_eval_routing_tool_drives_correct_node(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("query", "answer"),
-    [
-        ("오늘 학식 뭐야", "오늘 학식은 제육볶음입니다."),
-        ("캠퍼스 시설 안내해줘", "도서관, 체육관 등이 있습니다."),
-        ("안녕", "안녕하세요! 무엇을 도와드릴까요?"),
-    ],
+    "case",
+    _DIRECT_CASES,
+    ids=[case["id"] for case in _DIRECT_CASES],
 )
-async def test_eval_direct_answer_ends_without_routing(query: str, answer: str) -> None:
+async def test_eval_direct_answer_ends_without_routing(case: dict) -> None:
     """When the LLM answers directly (no transfer tool call), no marker is emitted
     and the supervisor ends without handing off to a sub-agent."""
-    state = await _run_supervisor([AIMessage(content=answer)], query)
+    query = case["query"]
+    state = await _run_supervisor([AIMessage(content=case["fixture_answer"])], query)
 
     assert not any(
         _ROUTE_PREFIX in getattr(msg, "content", "")
@@ -138,6 +145,28 @@ async def test_eval_direct_answer_ends_without_routing(query: str, answer: str) 
 
     cmd = _post_supervisor(state)
     assert cmd.goto is END, f"'{query}' should end without sub-agent routing"
+
+
+def test_eval_dataset_has_versioned_schema_and_known_failure_types() -> None:
+    """Keep the checked-in corpus reviewable instead of silently accepting drift."""
+    assert _EVAL["schema_version"] == "1.0"
+    taxonomy = {item["id"] for item in _EVAL["failure_taxonomy"]}
+    assert taxonomy
+
+    ids = [case["id"] for case in _EVAL["cases"]]
+    assert len(ids) == len(set(ids)), "eval case ids must be unique"
+    assert _ROUTE_CASES and _DIRECT_CASES
+
+    for case in _EVAL["cases"]:
+        assert case["query"].strip()
+        assert set(case["detects"]).issubset(taxonomy)
+        expected = case["expected"]
+        if expected["mode"] == "route":
+            assert expected["tool"].startswith("transfer_to_")
+            assert expected["agent"].endswith("_agent")
+        else:
+            assert expected == {"mode": "direct"}
+            assert case["fixture_answer"].strip()
 
 
 # ── Marker-parser edge cases (real parser, not tautological) ───────────────────

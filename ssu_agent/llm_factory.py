@@ -3,11 +3,15 @@ LLM factory with multi-provider fallback.
 
 Provider priority:
   0. Anthropic Claude Haiku 4.5 — used first when ANTHROPIC_API_KEY is set
-     (paid; temporary dev/testing). Falls back to the free providers below on
+     (paid; temporary dev/testing). Falls back to the configured providers below on
      error or when the key is unset.
-  1. Groq Llama-3.3-70b  — 14,400 req/day free, very fast
-  2. Google Gemini        — 20 req/day free tier, high quality
-  3. OpenRouter           — catch-all aggregator, many free models
+  1. Groq Llama-3.3-70b
+  2. Google Gemini
+  3. OpenRouter
+
+Provider pricing, model availability, and organization-level quotas change
+outside this repository. They are runtime constraints, not part of the tested
+fallback-order contract.
 
 NOTE: Use ChatGroq (not ChatOpenAI with Groq base_url) for Groq — the
 generic ChatOpenAI wrapper serializes assistant content as a list of

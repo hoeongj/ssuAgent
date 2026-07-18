@@ -44,7 +44,10 @@ browser
 - Library writes interrupt after `prepare_*` and resume with `confirm_action` only after explicit
   approval in ssuAI.
 - Only configured providers join the Anthropic → Groq → Gemini → OpenRouter sequence. Each agent's
-  manual `bind_tools` loop controls provider-specific tool-call differences and fallback.
+  manual `bind_tools` loop controls provider-specific tool-call differences and fallback. Groq uses
+  `ChatGroq` instead of the generic `ChatOpenAI` wrapper for tool-call content compatibility.
+  Pricing, model availability, and organization quotas are external runtime constraints; this order
+  does not claim a cost or accuracy advantage.
 
 See the [architecture document](docs/architecture.md) for request, trust, and state boundaries and
 the current single-replica constraint.
@@ -82,10 +85,17 @@ uv run uvicorn ssu_agent.main:app --host 0.0.0.0 --port 8000
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest
+uv run pytest tests/test_eval_routing.py
 ```
 
 See the [configuration guide](docs/configuration.md) for each variable's security meaning and the
 difference between local and production settings.
+
+The versioned routing corpus contains nine prompts: six domain handoffs and
+three direct answers, classified against four failure types. The test uses a fake chat model while
+executing the real routing tools, markers, parser, and graph destinations after tool selection. It
+is not a live-model tool-selection accuracy result. See [`evals/README.md`](evals/README.md) for the
+evidence boundary.
 
 ## Documentation
 

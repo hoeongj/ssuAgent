@@ -1,0 +1,105 @@
+{
+  "schema_version": "1.0",
+  "evaluation_boundary": "Deterministic supervisor routing contract after model tool selection; this corpus does not measure live-model routing accuracy.",
+  "failure_taxonomy": [
+    {
+      "id": "wrong_domain_handoff",
+      "description": "The selected transfer tool sends a request to the wrong domain agent."
+    },
+    {
+      "id": "missing_route_marker",
+      "description": "The real routing tool or parser fails to carry its ROUTE_TO marker to the graph command."
+    },
+    {
+      "id": "unregistered_transfer_tool",
+      "description": "The supervisor cannot execute the expected transfer tool."
+    },
+    {
+      "id": "unnecessary_handoff",
+      "description": "A public or conversational request is handed to a specialist when the supervisor should answer directly."
+    }
+  ],
+  "cases": [
+    {
+      "id": "library-reserve-seat",
+      "query": "도서관 자리 잡아줘",
+      "expected": {
+        "mode": "route",
+        "tool": "transfer_to_library_agent",
+        "agent": "library_agent"
+      },
+      "detects": ["wrong_domain_handoff", "missing_route_marker", "unregistered_transfer_tool"]
+    },
+    {
+      "id": "library-find-seat",
+      "query": "빈 좌석 알려줘",
+      "expected": {
+        "mode": "route",
+        "tool": "transfer_to_library_agent",
+        "agent": "library_agent"
+      },
+      "detects": ["wrong_domain_handoff", "missing_route_marker"]
+    },
+    {
+      "id": "academic-scholarship",
+      "query": "장학금 기준 알려줘",
+      "expected": {
+        "mode": "route",
+        "tool": "transfer_to_academic_agent",
+        "agent": "academic_agent"
+      },
+      "detects": ["wrong_domain_handoff", "missing_route_marker", "unregistered_transfer_tool"]
+    },
+    {
+      "id": "academic-graduation",
+      "query": "졸업요건 확인해줘",
+      "expected": {
+        "mode": "route",
+        "tool": "transfer_to_academic_agent",
+        "agent": "academic_agent"
+      },
+      "detects": ["wrong_domain_handoff", "missing_route_marker"]
+    },
+    {
+      "id": "lms-assignments",
+      "query": "LMS 과제 확인해줘",
+      "expected": {
+        "mode": "route",
+        "tool": "transfer_to_lms_agent",
+        "agent": "lms_agent"
+      },
+      "detects": ["wrong_domain_handoff", "missing_route_marker", "unregistered_transfer_tool"]
+    },
+    {
+      "id": "lms-export",
+      "query": "강의 자료 내려받아줘",
+      "expected": {
+        "mode": "route",
+        "tool": "transfer_to_lms_agent",
+        "agent": "lms_agent"
+      },
+      "detects": ["wrong_domain_handoff", "missing_route_marker"]
+    },
+    {
+      "id": "public-meal",
+      "query": "오늘 학식 뭐야",
+      "expected": { "mode": "direct" },
+      "fixture_answer": "오늘 학식 정보를 안내할게요.",
+      "detects": ["unnecessary_handoff"]
+    },
+    {
+      "id": "public-campus",
+      "query": "캠퍼스 시설 안내해줘",
+      "expected": { "mode": "direct" },
+      "fixture_answer": "캠퍼스 시설을 안내할게요.",
+      "detects": ["unnecessary_handoff"]
+    },
+    {
+      "id": "conversation-greeting",
+      "query": "안녕",
+      "expected": { "mode": "direct" },
+      "fixture_answer": "안녕하세요! 무엇을 도와드릴까요?",
+      "detects": ["unnecessary_handoff"]
+    }
+  ]
+}

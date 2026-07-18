@@ -74,8 +74,8 @@ def test_anthropic_key_prepends_claude_before_groq(monkeypatch: pytest.MonkeyPat
 def test_all_keys_yield_groq_gemini_openrouter_in_order(monkeypatch: pytest.MonkeyPatch):
     """All three keys set → fallback priority is exactly Groq → Gemini → OpenRouter.
 
-    Guards the provider order (Groq first for its larger free-tier quota); the
-    OpenRouter client is a ChatOpenAI pointed at the OpenRouter base_url.
+    Guards the explicit operational provider order without assuming a stable
+    external quota; the OpenRouter client points at the OpenRouter base_url.
     """
     from langchain_google_genai import ChatGoogleGenerativeAI
     from langchain_groq import ChatGroq

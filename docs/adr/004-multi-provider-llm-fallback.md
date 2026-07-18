@@ -97,9 +97,21 @@ create_llm() 반환값:
 
 2. **폴백 순서: Gemini-first → Groq-first**
    - 최종 순서: **Groq(llama-3.3-70b-versatile) → Gemini(`GEMINI_MODEL`, 기본 gemini-2.5-flash) → OpenRouter(meta-llama/llama-3.3-70b-instruct:free)**
-   - 이유: Groq free tier는 14,400 req/day로 Gemini free tier(20 req/day)보다 쿼타가 훨씬 크고 추론 속도도 매우 빠르다. Gemini는 한국어 품질이 높아 2순위로 유지, OpenRouter는 catch-all aggregator로 최후순위 (`llm_factory.py` docstring, README).
+   - 이유: 당시 무료 구간의 요청 여유가 더 크다는 운영 가정과 빠른 추론 속도를 근거로 Groq를 먼저 두었다. 이 비교는 모델·조직·시점에 따라 바뀌는 외부 조건이며 현재 보장값이 아니다. Gemini는 한국어 품질을 고려해 2순위로 유지하고, OpenRouter는 catch-all aggregator로 최후순위에 두었다 (`llm_factory.py` docstring, README, 아래 2026-07-18 갱신).
 
 3. **Groq 클라이언트: `ChatOpenAI`(base_url) → `ChatGroq`**
    - 제네릭 `ChatOpenAI` 래퍼는 assistant content를 content-block 리스트로 직렬화하는데, Groq API가 두 번째 tool call turn에서 이를 400으로 거부한다. `ChatGroq`는 string-content 변환을 내부에서 처리한다 (`fix/chatgroq-message-format`).
 
 프로바이더 순서 회귀는 `tests/test_llm_factory.py`의 provider-order 테스트로 고정된다.
+
+## 갱신 (2026-07-18) — 외부 쿼터를 설계 계약에서 분리
+
+위 2026-07-02 갱신의 무료 쿼터 비교는 당시의 운영 판단 기록이며 현재 보장값이 아니다.
+Groq를 포함한 프로바이더의 모델별 한도, 가격, 제공 여부는 조직과 시점에 따라 바뀌고
+정확한 값은 계정 콘솔이 소유한다. 따라서 README와 `llm_factory.py`에서는 고정 쿼터를
+제거하고, 우선순위·키별 opt-in·실패 시 다음 provider로 이동하는 코드 계약만 남겼다.
+
+현재 순서는 tool-call 호환성과 기존 운영 선택을 보존하기 위한 명시적 정책이다. 비용
+또는 정확도 우위를 뜻하지 않는다. 배포 전에는 공식 provider 문서와 계정 한도를 다시
+확인하고, 모델/버전/데이터셋/비용 경계가 기록된 별도 평가 없이 품질 우위를 주장하지
+않는다.
