@@ -10,9 +10,11 @@ import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
+from pydantic import Field
 
 from ssu_agent.agents.academic import (
     _ACADEMIC_LOGIN_MESSAGE,
+    _ACADEMIC_SERVICE_UNAVAILABLE_MESSAGE,
     _ACADEMIC_STATUS_UNAVAILABLE_MESSAGE,
     _build_academic_prompt,
     _requires_private_academic_context,
@@ -52,6 +54,14 @@ class _SpyAcademicLLM(FakeMessagesListChatModel):
         self.bind_tools_calls += 1
         self.visible_tool_names = [tool.name for tool in tools]
         return self
+
+
+class _CapturingAcademicLLM(_SpyAcademicLLM):
+    seen_inputs: list[list] = Field(default_factory=list)
+
+    async def ainvoke(self, input, config=None, **kwargs):
+        self.seen_inputs.append(list(input) if isinstance(input, list) else input)
+        return await super().ainvoke(input, config=config, **kwargs)
 
 
 def _make_academic_llm() -> _MockAcademicLLM:
@@ -300,6 +310,100 @@ async def test_private_academic_followup_keeps_private_tools_after_preflight():
     assert result["messages"][-1].name == "academic_agent"
     assert "get_my_grades" in llm.visible_tool_names
     assert "get_auth_status" not in llm.visible_tool_names
+
+
+@pytest.mark.asyncio
+async def test_connected_private_tool_failure_skips_model_synthesis():
+    @tool("check_graduation_requirements")
+    def failing_graduation_lookup(mcp_session_id: str) -> str:
+        """Personal graduation lookup fixture that fails after auth preflight."""
+        raise RuntimeError("sensitive upstream failure")
+
+    llm = _CapturingAcademicLLM(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "graduation-failure-1",
+                        "name": "check_graduation_requirements",
+                        "args": {},
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="일반적인 졸업 요건을 대신 안내하겠습니다."),
+        ]
+    )
+    graph = build_academic_agent(
+        [connected_auth_status, failing_graduation_lookup],
+        llm=llm,
+    ).compile()
+    state: SsuAgentState = {
+        "messages": [HumanMessage(content="졸업까지 어떤 조건들이 남았어?")],
+        "mcp_session_id": "saint-session",
+        "library_connected": False,
+        "active_agent": "academic",
+    }
+
+    result = await graph.ainvoke(state)
+
+    assert len(llm.seen_inputs) == 1
+    assert result["messages"][-1].content == (
+        f"[학사 에이전트] {_ACADEMIC_SERVICE_UNAVAILABLE_MESSAGE}"
+    )
+    assert "일반적인 졸업 요건" not in result["messages"][-1].content
+    assert "sensitive upstream failure" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_structured_academic_upstream_failure_skips_model_synthesis():
+    @tool("check_graduation_requirements")
+    def unavailable_graduation_lookup(mcp_session_id: str) -> str:
+        """Personal lookup returning the ssuMCP non-OK private envelope."""
+        return (
+            '{"status":"UPSTREAM_UNAVAILABLE","code":"UPSTREAM_UNAVAILABLE",'
+            '"retryable":true,"mcpSessionId":"academic-secret",'
+            '"userMessage":"일시적 오류",'
+            '"developerMessage":"sensitive academic implementation detail"}'
+        )
+
+    llm = _CapturingAcademicLLM(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "graduation-structured-failure-1",
+                        "name": "check_graduation_requirements",
+                        "args": {},
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="일반적인 졸업 요건을 대신 안내하겠습니다."),
+        ]
+    )
+    graph = build_academic_agent(
+        [connected_auth_status, unavailable_graduation_lookup],
+        llm=llm,
+    ).compile()
+    state: SsuAgentState = {
+        "messages": [HumanMessage(content="졸업까지 어떤 조건들이 남았어?")],
+        "mcp_session_id": "saint-session",
+        "library_connected": False,
+        "active_agent": "academic",
+    }
+
+    result = await graph.ainvoke(state)
+
+    assert len(llm.seen_inputs) == 1
+    assert result["messages"][-1].content == (
+        f"[학사 에이전트] {_ACADEMIC_SERVICE_UNAVAILABLE_MESSAGE}"
+    )
+    assert "일반적인 졸업 요건" not in result["messages"][-1].content
+    assert "academic-secret" not in repr(result)
+    assert "sensitive academic implementation detail" not in repr(result)
 
 
 @pytest.mark.asyncio

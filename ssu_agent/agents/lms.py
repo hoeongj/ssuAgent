@@ -63,6 +63,11 @@ _LMS_STATUS_UNAVAILABLE_MESSAGE = (
     "LMS 연결 상태를 지금 확인하지 못했어요. 잠시 후 다시 보내거나 화면 상단의 ‘연결’에서 "
     "LMS 상태를 확인해 주세요. 로그인 정보는 채팅에 입력하지 않아도 돼요."
 )
+_LMS_SERVICE_UNAVAILABLE_MESSAGE = (
+    "LMS 연결은 확인됐지만 요청한 정보를 가져오지 못했어요. 잠시 후 다시 보내 주세요. 계속 "
+    "실패하면 화면 상단의 ‘연결’에서 LMS를 다시 연결해 주세요. 로그인 정보는 채팅에 입력하지 "
+    "않아도 돼요."
+)
 _LMS_EXPORT_PATH_RE = re.compile(r"^/api/lms/exports/[^/]+/download$")
 
 
@@ -211,8 +216,10 @@ def build_lms_agent(
             state,
             config,
             auth_required_message=_LMS_LOGIN_MESSAGE,
+            upstream_failure_message=_LMS_SERVICE_UNAVAILABLE_MESSAGE,
             terminal_tool_result_formatter=_format_lms_export_confirmation,
             standalone_tool_names={"confirm_lms_material_export"},
+            private_tool_call_budget=(1 if provider_state is ProviderLinkState.DEGRADED else None),
         )
 
     graph = StateGraph(SsuAgentState)

@@ -89,6 +89,7 @@ uv run pytest
 - [아키텍처와 신뢰 경계](docs/architecture.md)
 - [설정과 환경 변수](docs/configuration.md)
 - [GitOps 배포와 운영 검증](docs/deploy.md)
+- [운영 장애 기록](docs/troubleshooting.md)
 - [ADR 목록](docs/adr/)
 
 ## 범위와 제약

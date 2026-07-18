@@ -23,6 +23,7 @@
 ## 운영
 
 - [GitOps 배포와 검증](deploy.md)
+- [운영 장애 기록](troubleshooting.md)
 - [GitHub Actions CI](../.github/workflows/ci.yml)
 - [Helm chart](../deploy/charts/ssu-agent/)
 - [ArgoCD Application](../deploy/argocd/application-ssu-agent.yaml)

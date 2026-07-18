@@ -39,6 +39,15 @@ _AUTH_DENIAL_STATUSES = {
     "INVALID_SESSION",
     "SESSION_MISMATCH",
 }
+_UPSTREAM_OPERATIONAL_STATUS_PREFIX = "UPSTREAM_"
+_LEGACY_LMS_ERROR_TOOL_NAMES = {
+    "export_all_lms_materials",
+    "get_lms_dashboard",
+    "get_my_lms_courses",
+    "get_my_lms_materials",
+    "prepare_lms_material_export",
+}
+_LEGACY_LMS_ERROR_PREFIX = "LMS API 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
 _INTERNAL_AUTH_GUIDANCE_RE = re.compile(
     r"mcp[_\s-]*session[_\s-]*(?:id|아이디)"
     r"|mcp_session_id"
@@ -82,9 +91,18 @@ _AUTH_STATUS_TIMEOUT_SECONDS = 5.0
 
 class ProviderLinkState(StrEnum):
     CONNECTED = "connected"
+    DEGRADED = "degraded"
     DISCONNECTED = "disconnected"
     UNAVAILABLE = "unavailable"
     UNSUPPORTED = "unsupported"
+
+
+class ToolResultDisposition(StrEnum):
+    """Action the deterministic boundary should take for one tool result."""
+
+    NORMAL = "normal"
+    AUTH_DENIED = "auth_denied"
+    UPSTREAM_FAILURE = "upstream_failure"
 
 
 def _session_argument_names(tool: BaseTool) -> set[str]:
@@ -185,6 +203,11 @@ def tools_for_model(tools: list[BaseTool], mcp_session_id: str | None) -> list[B
             continue
         visible.append(tool)
     return visible
+
+
+def session_bound_tool_names(tools: list[BaseTool]) -> set[str]:
+    """Return model-visible tool names that carry an injected private session."""
+    return {tool.name for tool in tools if isinstance(tool, _SessionBoundTool)}
 
 
 def _json_object(text: str) -> dict[str, Any] | None:
@@ -335,7 +358,7 @@ async def check_provider_link(
     """Read provider linkage without exposing the status payload to the model."""
     status_tool = next((tool for tool in tools if tool.name == "get_auth_status"), None)
     if status_tool is None:
-        return ProviderLinkState.UNSUPPORTED
+        return ProviderLinkState.UNAVAILABLE
     try:
         result = await asyncio.wait_for(
             status_tool.ainvoke(
@@ -373,9 +396,16 @@ async def check_provider_link(
         health = str(entry.get("health", "UNKNOWN")).upper()
         if health == "EXPIRED":
             return ProviderLinkState.DISCONNECTED
+        if health in {"VALID", "UNKNOWN"}:
+            return ProviderLinkState.CONNECTED
+        # ERROR records a failed upstream call, not a revoked grant. Preserve
+        # the user's explicit request, but tell the shared loop to apply its
+        # bounded private-invocation policy. The MCP transport wrapper retains
+        # its existing single retry; the model cannot schedule another private
+        # call in this request after the bounded invocation is consumed.
         if health == "ERROR":
-            return ProviderLinkState.UNAVAILABLE
-        return ProviderLinkState.CONNECTED
+            return ProviderLinkState.DEGRADED
+        return ProviderLinkState.UNAVAILABLE
     return ProviderLinkState.DISCONNECTED
 
 
@@ -385,6 +415,44 @@ def auth_denial_status(content: str) -> str | None:
         return None
     status = str(payload.get("status", "")).upper()
     return status if status in _AUTH_DENIAL_STATUSES else None
+
+
+def classify_tool_result(tool_name: str, content: str) -> ToolResultDisposition:
+    """Classify private MCP envelopes without scanning arbitrary payload text.
+
+    Current ssuMCP private responses use a top-level ``status`` and ``retryable``
+    contract. Some legacy LMS tools instead return their known API failure string
+    inside ``data`` while keeping ``status=OK``; that compatibility branch is
+    intentionally restricted to the exact affected tools and prefix.
+    """
+    payload = _json_object(content)
+    if payload is None:
+        return ToolResultDisposition.NORMAL
+
+    status = str(payload.get("status", "")).upper()
+    if status in _AUTH_DENIAL_STATUSES:
+        return ToolResultDisposition.AUTH_DENIED
+
+    if status and status != "OK":
+        code = str(payload.get("code", "")).upper()
+        if (
+            payload.get("retryable") is True
+            or status.startswith(_UPSTREAM_OPERATIONAL_STATUS_PREFIX)
+            or code.startswith(_UPSTREAM_OPERATIONAL_STATUS_PREFIX)
+        ):
+            return ToolResultDisposition.UPSTREAM_FAILURE
+        return ToolResultDisposition.NORMAL
+
+    data = payload.get("data")
+    if (
+        status == "OK"
+        and tool_name in _LEGACY_LMS_ERROR_TOOL_NAMES
+        and isinstance(data, str)
+        and data.startswith(_LEGACY_LMS_ERROR_PREFIX)
+    ):
+        return ToolResultDisposition.UPSTREAM_FAILURE
+
+    return ToolResultDisposition.NORMAL
 
 
 def contains_internal_auth_guidance(content: object) -> bool:

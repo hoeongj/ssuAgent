@@ -20,7 +20,12 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph
 
 from ssu_agent.agents.auth_guard import ProviderLinkState, check_provider_link, tools_for_model
-from ssu_agent.agents.react_loop import drop_routing_messages, latest_turn_messages, run_react_loop
+from ssu_agent.agents.react_loop import (
+    UPSTREAM_TOOL_UNAVAILABLE_MESSAGE,
+    drop_routing_messages,
+    latest_turn_messages,
+    run_react_loop,
+)
 from ssu_agent.llm_factory import create_llm, get_llm_sequence
 from ssu_agent.supervisor.state import SsuAgentState
 from ssu_agent.tool_results import content_to_text
@@ -56,6 +61,12 @@ _ACADEMIC_LOGIN_MESSAGE = (
 _ACADEMIC_STATUS_UNAVAILABLE_MESSAGE = (
     "u-SAINT 연결 상태를 지금 확인하지 못했어요. 잠시 후 다시 보내거나 화면 상단의 ‘연결’에서 "
     "u-SAINT 상태를 확인해 주세요. 로그인 정보는 채팅에 입력하지 않아도 돼요."
+)
+_ACADEMIC_SERVICE_UNAVAILABLE_MESSAGE = (
+    "u-SAINT 연결은 확인됐지만 학사 정보 서비스에서 요청한 정보를 가져오지 못했어요. "
+    "잠시 후 다시 보내 주세요. "
+    "개인 학사 조회가 계속 실패하면 화면 상단의 ‘연결’에서 u-SAINT를 다시 연결해 주세요. "
+    "로그인 정보는 채팅에 입력하지 않아도 돼요."
 )
 
 _ACADEMIC_DATA_RE = re.compile(
@@ -182,6 +193,7 @@ def build_academic_agent(
         mcp_session_id = state.get("mcp_session_id")
         requires_private_data = _requires_private_academic_context(state.get("messages", []))
         confirmed_session_id: str | None = None
+        provider_state: ProviderLinkState | None = None
         if not mcp_session_id and requires_private_data:
             return {
                 "messages": [AIMessage(content=f"[학사 에이전트] {_ACADEMIC_LOGIN_MESSAGE}")],
@@ -221,6 +233,12 @@ def build_academic_agent(
             state,
             config,
             auth_required_message=_ACADEMIC_LOGIN_MESSAGE,
+            upstream_failure_message=(
+                _ACADEMIC_SERVICE_UNAVAILABLE_MESSAGE
+                if confirmed_session_id
+                else UPSTREAM_TOOL_UNAVAILABLE_MESSAGE
+            ),
+            private_tool_call_budget=(1 if provider_state is ProviderLinkState.DEGRADED else None),
         )
 
     graph = StateGraph(SsuAgentState)
