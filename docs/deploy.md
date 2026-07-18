@@ -68,6 +68,36 @@ Secret key 이름과 선택 provider는 Helm의
 
 문서-only 변경은 CI의 `paths-ignore` 대상이므로 새 image나 rollout이 생기지 않는 것이 정상이다.
 
+## 2026-07-18 릴리스 증거
+
+라우팅 평가 계약을 추가한 pull request
+[#65](https://github.com/ghdtjdwn/ssuAgent/pull/65)는 main commit
+`b1f88e339f6ae081d9580d271747404cfe989721`로 머지됐다. 같은 commit에 대한
+[main CI](https://github.com/ghdtjdwn/ssuAgent/actions/runs/29646212353)에서 다음 게이트가
+실제로 완료됐다.
+
+- Ruff check와 format check 통과
+- pytest 306개 통과
+- ARM64 image `ghcr.io/ghdtjdwn/ssuagent:sha-b1f88e339f6ae081d9580d271747404cfe989721`
+  build·push 성공
+- 별도 [gitleaks check](https://github.com/ghdtjdwn/ssuAgent/actions/runs/29646212349) 통과
+
+ArgoCD Image Updater는 commit `e40fa68e98658d2b87430f35b7202e8a054f6c2a`로
+`values.yaml`의 기대 image tag를 `sha-b1f88e339f6ae081d9580d271747404cfe989721`로
+write-back했다. 그 후 공개 endpoint의 읽기 전용 probe는 다음과 같았다.
+
+| 점검 | 관찰 결과 |
+| --- | --- |
+| `GET https://ssuagent.duckdns.org/health` | HTTP 200, `status=UP` |
+| `GET https://ssuagent.duckdns.org/healthz/deep` | HTTP 200, `status=UP`, `mcp=UP` |
+
+이 증거는 CI image 생성, GitOps 기대 태그 변경, 그리고 점검 시점의 service·MCP
+건강 상태를 각각 확인한다. 다만 ArgoCD와 cluster 관리면은 Tailscale 인증을
+요구해 이 검증에서 Application의 `Synced/Healthy`, Deployment rollout, pod `Ready`·restart
+수, 실제 running container image SHA를 직접 조회하지 못했다. public health와
+Git write-back만으로는 응답한 pod가 해당 SHA를 실행 중임을 증명할 수 없으므로,
+이 릴리스의 직접 확인 범위는 배포 검증 순서 1∼3과 7까지다.
+
 ## Rollback
 
 정상 rollback은 cluster에서 image를 직접 바꾸는 작업이 아니라, `values.yaml`의 image tag를 마지막으로
