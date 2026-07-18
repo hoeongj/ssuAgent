@@ -27,10 +27,12 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 
 from ssu_agent.agents.auth_guard import (
-    auth_denial_status,
+    ToolResultDisposition,
+    classify_tool_result,
     contains_internal_auth_guidance,
     sanitize_messages_for_model,
     sanitize_tool_result_for_model,
+    session_bound_tool_names,
 )
 from ssu_agent.supervisor.state import SsuAgentState
 from ssu_agent.tool_results import content_to_text, sanitize_tool_pairing, tool_result_to_text
@@ -43,6 +45,9 @@ logger = logging.getLogger(__name__)
 # while stopping exploratory re-call storms that used to push latency past 60s.
 _MAX_TOOL_TURNS = 4
 EMPTY_RESPONSE_FALLBACK = "요청을 처리하지 못했어요. 다시 한 번 구체적으로 말씀해 주세요."
+UPSTREAM_TOOL_UNAVAILABLE_MESSAGE = (
+    "연결된 서비스에서 요청한 정보를 가져오지 못했어요. 잠시 후 다시 시도해 주세요."
+)
 _AGENT_NAMES_BY_TAG = {
     "학사 에이전트": "academic_agent",
     "도서관 에이전트": "library_agent",
@@ -83,8 +88,11 @@ async def _run_tool_call(
             type(tool_exc).__name__,
         )
         content = "Tool error: upstream tool failed."
+        status = "error"
+    else:
+        status = "success"
     logger.info("tool %s finished in %.2fs", name, time.perf_counter() - started)
-    return ToolMessage(content=content, tool_call_id=call_id)
+    return ToolMessage(content=content, tool_call_id=call_id, status=status)
 
 
 async def _run_tool_call_with_batch_policy(
@@ -256,8 +264,10 @@ async def run_react_loop(
     state: SsuAgentState,
     config: RunnableConfig,
     auth_required_message: str | None = None,
+    upstream_failure_message: str = UPSTREAM_TOOL_UNAVAILABLE_MESSAGE,
     terminal_tool_result_formatter: TerminalToolResultFormatter | None = None,
     standalone_tool_names: set[str] | None = None,
+    private_tool_call_budget: int | None = None,
 ) -> dict:
     """Run the bind_tools ReAct loop with per-provider fallback.
 
@@ -269,7 +279,13 @@ async def run_react_loop(
     checkpoints the result before the browser stream deadline. Tools named in
     ``standalone_tool_names`` are not executed when a model batches them with
     another call; the model receives a sequence error and may retry after the
-    dependency result is available.
+    dependency result is available. A tool invocation exception is represented
+    by ``ToolMessage.status == "error"`` and ends in a deterministic response;
+    the masked failure detail is never handed back to a model for synthesis.
+    ``private_tool_call_budget`` bounds session-bound calls across the whole
+    request. A turn that would exceed the remaining budget is rejected before
+    any call runs, so a degraded provider cannot receive batched calls or a
+    model-driven re-call. The transport layer may still apply its own retry.
     """
     messages = sanitize_messages_for_model(
         latest_turn_messages(
@@ -279,6 +295,8 @@ async def run_react_loop(
         state.get("mcp_session_id"),
     )
     input_messages = sanitize_tool_pairing([SystemMessage(content=system_prompt), *messages])
+    private_names = session_bound_tool_names(tools)
+    private_tool_calls_used = 0
 
     last_exc: Exception | None = None
     for _llm in llm_seq:
@@ -309,6 +327,33 @@ async def run_react_loop(
                     )
                     break
 
+                standalone_batch = len(response.tool_calls) > 1
+                private_calls_this_turn = sum(
+                    tc.get("name") in private_names
+                    and not (
+                        standalone_batch and tc.get("name") in (standalone_tool_names or set())
+                    )
+                    for tc in response.tool_calls
+                )
+                if (
+                    private_tool_call_budget is not None
+                    and private_tool_calls_used + private_calls_this_turn > private_tool_call_budget
+                ):
+                    logger.warning(
+                        "[%s] provider=%s rejected private tool batch/re-call: "
+                        "used=%d requested=%d budget=%d",
+                        tag,
+                        provider,
+                        private_tool_calls_used,
+                        private_calls_this_turn,
+                        private_tool_call_budget,
+                    )
+                    return {
+                        "messages": [AIMessage(content=f"[{tag}] {upstream_failure_message}")],
+                        "active_agent": None,
+                    }
+                private_tool_calls_used += private_calls_this_turn
+
                 # Fan the turn's tool calls out concurrently. u-SAINT scrapes are
                 # the dominant cost; running N of them in parallel collapses the
                 # per-turn latency from sum-of-tools to slowest-tool. gather keeps
@@ -322,7 +367,6 @@ async def run_react_loop(
                     len(response.tool_calls),
                     [tc.get("name") for tc in response.tool_calls],
                 )
-                standalone_batch = len(response.tool_calls) > 1
                 tool_messages = await asyncio.gather(
                     *(
                         _run_tool_call_with_batch_policy(
@@ -338,12 +382,28 @@ async def run_react_loop(
                         for tc in response.tool_calls
                     )
                 )
-                if auth_required_message and any(
-                    auth_denial_status(content_to_text(message.content)) is not None
-                    for message in tool_messages
-                ):
+                dispositions = [
+                    classify_tool_result(
+                        str(tool_call.get("name", "")),
+                        content_to_text(tool_message.content),
+                    )
+                    for tool_call, tool_message in zip(
+                        response.tool_calls,
+                        tool_messages,
+                        strict=True,
+                    )
+                ]
+                if auth_required_message and ToolResultDisposition.AUTH_DENIED in dispositions:
                     return {
                         "messages": [AIMessage(content=f"[{tag}] {auth_required_message}")],
+                        "active_agent": None,
+                    }
+                if (
+                    any(message.status == "error" for message in tool_messages)
+                    or ToolResultDisposition.UPSTREAM_FAILURE in dispositions
+                ):
+                    return {
+                        "messages": [AIMessage(content=f"[{tag}] {upstream_failure_message}")],
                         "active_agent": None,
                     }
 

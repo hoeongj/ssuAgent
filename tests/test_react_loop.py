@@ -19,6 +19,7 @@ from pydantic import Field
 from ssu_agent.agents.react_loop import (
     _MAX_TOOL_TURNS,
     EMPTY_RESPONSE_FALLBACK,
+    UPSTREAM_TOOL_UNAVAILABLE_MESSAGE,
     drop_routing_messages,
     latest_turn_messages,
     run_react_loop,
@@ -457,7 +458,71 @@ async def test_auth_status_name_inside_normal_data_does_not_trigger_guard():
 
 
 @pytest.mark.asyncio
-async def test_tool_exception_details_never_reach_next_model_turn():
+async def test_upstream_status_name_inside_normal_data_does_not_trigger_guard():
+    @tool("get_lms_dashboard")
+    def dashboard() -> str:
+        """Normal dashboard data mentioning a documented status."""
+        return '{"status":"OK","data":{"note":"UPSTREAM_UNAVAILABLE is a documented status"}}'
+
+    llm = _CapturingSeqLLM(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "get_lms_dashboard", "args": {}, "id": "dashboard-1"}],
+            ),
+            AIMessage(content="정상 LMS 대시보드 답변입니다."),
+        ]
+    )
+
+    result = await run_react_loop([llm], [dashboard], "시스템", "LMS 에이전트", _state(), {})
+
+    assert len(llm.seen_inputs) == 2
+    assert result["messages"][-1].content == "[LMS 에이전트] 정상 LMS 대시보드 답변입니다."
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_domain_outcome_reaches_model_synthesis():
+    @tool("confirm_lms_material_export")
+    def no_pending_export() -> str:
+        """Return a valid non-retryable domain outcome."""
+        return (
+            '{"status":"NO_PENDING_ACTION","code":"NO_PENDING_ACTION",'
+            '"retryable":false,"userMessage":"먼저 내보내기를 준비해 주세요."}'
+        )
+
+    llm = _CapturingSeqLLM(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "confirm_lms_material_export",
+                        "args": {},
+                        "id": "no-pending-1",
+                    }
+                ],
+            ),
+            AIMessage(content="먼저 강의자료 내보내기를 준비해 주세요."),
+        ]
+    )
+
+    result = await run_react_loop(
+        [llm],
+        [no_pending_export],
+        "시스템",
+        "LMS 에이전트",
+        _state(),
+        {},
+    )
+
+    assert len(llm.seen_inputs) == 2
+    assert result["messages"][-1].content == (
+        "[LMS 에이전트] 먼저 강의자료 내보내기를 준비해 주세요."
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_exception_returns_deterministic_failure_without_another_model_turn():
     @tool
     def failing_lookup() -> str:
         """Fail with a sensitive upstream detail."""
@@ -473,11 +538,12 @@ async def test_tool_exception_details_never_reach_next_model_turn():
         ]
     )
 
-    await run_react_loop([llm], [failing_lookup], "시스템", "테스트", _state(), {})
+    result = await run_react_loop([llm], [failing_lookup], "시스템", "테스트", _state(), {})
 
-    second_turn = repr(llm.seen_inputs[1])
-    assert "raw-exception-secret" not in second_turn
-    assert "Tool error: upstream tool failed." in second_turn
+    assert len(llm.seen_inputs) == 1
+    assert result["messages"][-1].content == f"[테스트] {UPSTREAM_TOOL_UNAVAILABLE_MESSAGE}"
+    assert "raw-exception-secret" not in repr(result)
+    assert "Tool error: upstream tool failed." not in repr(result)
 
 
 @pytest.mark.asyncio

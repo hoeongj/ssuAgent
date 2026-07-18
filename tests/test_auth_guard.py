@@ -11,8 +11,10 @@ from langchain_core.tools import BaseTool, tool
 from ssu_agent.agents import auth_guard
 from ssu_agent.agents.auth_guard import (
     ProviderLinkState,
+    ToolResultDisposition,
     auth_denial_status,
     check_provider_link,
+    classify_tool_result,
     contains_internal_auth_guidance,
     sanitize_messages_for_model,
     sanitize_tool_result_for_model,
@@ -252,8 +254,8 @@ async def test_provider_link_check_uses_structured_provider_state():
 
 
 @pytest.mark.asyncio
-async def test_provider_link_check_missing_contract_is_unsupported():
-    assert await check_provider_link([], "secret", "SAINT", {}) is ProviderLinkState.UNSUPPORTED
+async def test_provider_link_check_missing_contract_is_unavailable():
+    assert await check_provider_link([], "secret", "SAINT", {}) is ProviderLinkState.UNAVAILABLE
 
 
 @pytest.mark.asyncio
@@ -261,6 +263,16 @@ async def test_provider_link_check_missing_contract_is_unsupported():
     ("payload", "expected"),
     [
         ("not-json", ProviderLinkState.UNAVAILABLE),
+        ('{"status":"UPSTREAM_UNAVAILABLE","providers":[]}', ProviderLinkState.UNAVAILABLE),
+        ('{"status":"OK"}', ProviderLinkState.UNAVAILABLE),
+        (
+            '{"status":"OK","providers":[{"provider":"SAINT","linked":true}]}',
+            ProviderLinkState.CONNECTED,
+        ),
+        (
+            '{"status":"OK","providers":[{"provider":"SAINT","linked":true,"health":"CORRUPT"}]}',
+            ProviderLinkState.UNAVAILABLE,
+        ),
         (
             json.dumps(
                 {
@@ -277,7 +289,7 @@ async def test_provider_link_check_missing_contract_is_unsupported():
                     "providers": [{"provider": "SAINT", "linked": True, "health": "ERROR"}],
                 }
             ),
-            ProviderLinkState.UNAVAILABLE,
+            ProviderLinkState.DEGRADED,
         ),
     ],
 )
@@ -291,6 +303,65 @@ async def test_provider_link_check_handles_unhealthy_payloads(
         return payload
 
     assert await check_provider_link([status_fixture], "secret", "SAINT", {}) is expected
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "payload", "expected"),
+    [
+        (
+            "check_graduation_requirements",
+            {
+                "status": "UPSTREAM_UNAVAILABLE",
+                "code": "UPSTREAM_UNAVAILABLE",
+                "retryable": True,
+            },
+            ToolResultDisposition.UPSTREAM_FAILURE,
+        ),
+        (
+            "get_my_lms_courses",
+            {
+                "status": "UPSTREAM_PROTOCOL_CHANGED",
+                "code": "UPSTREAM_PROTOCOL_CHANGED",
+                "retryable": False,
+            },
+            ToolResultDisposition.UPSTREAM_FAILURE,
+        ),
+        (
+            "confirm_lms_material_export",
+            {"status": "NO_PENDING_ACTION", "retryable": False},
+            ToolResultDisposition.NORMAL,
+        ),
+        (
+            "public_policy",
+            {"status": "OK", "data": {"note": "UPSTREAM_UNAVAILABLE is documented"}},
+            ToolResultDisposition.NORMAL,
+        ),
+        (
+            "get_lms_dashboard",
+            {
+                "status": "OK",
+                "data": (
+                    "LMS API 오류가 발생했습니다. 잠시 후 다시 시도해 주세요. (Canvas timeout)"
+                ),
+            },
+            ToolResultDisposition.UPSTREAM_FAILURE,
+        ),
+        (
+            "unrelated_tool",
+            {
+                "status": "OK",
+                "data": "LMS API 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+            },
+            ToolResultDisposition.NORMAL,
+        ),
+    ],
+)
+def test_tool_result_classifier_uses_only_known_structured_contracts(
+    tool_name: str,
+    payload: dict[str, Any],
+    expected: ToolResultDisposition,
+):
+    assert classify_tool_result(tool_name, json.dumps(payload)) is expected
 
 
 @pytest.mark.asyncio

@@ -4,10 +4,12 @@ import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
+from pydantic import Field
 
 from ssu_agent import config
 from ssu_agent.agents.lms import (
     _LMS_LOGIN_MESSAGE,
+    _LMS_SERVICE_UNAVAILABLE_MESSAGE,
     _LMS_STATUS_UNAVAILABLE_MESSAGE,
     _build_lms_prompt,
     _format_lms_export_confirmation,
@@ -26,6 +28,14 @@ class _SpyLmsLLM(FakeMessagesListChatModel):
             set(tool.tool_call_schema.model_json_schema().get("properties", {})) for tool in tools
         ]
         return self
+
+
+class _CapturingLmsLLM(_SpyLmsLLM):
+    seen_inputs: list[list] = Field(default_factory=list)
+
+    async def ainvoke(self, input, config=None, **kwargs):
+        self.seen_inputs.append(list(input) if isinstance(input, list) else input)
+        return await super().ainvoke(input, config=config, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +64,15 @@ def connected_lms_status(mcp_session_id: str) -> str:
     return (
         '{"status":"OK","mcpSessionId":"secret",'
         '"providers":[{"provider":"LMS","linked":true,"health":"VALID"}]}'
+    )
+
+
+@tool("get_auth_status")
+def degraded_lms_status(mcp_session_id: str) -> str:
+    """Linked LMS provider whose last upstream call failed."""
+    return (
+        '{"status":"OK","mcpSessionId":"secret",'
+        '"providers":[{"provider":"LMS","linked":true,"health":"ERROR"}]}'
     )
 
 
@@ -125,6 +144,154 @@ async def test_connected_lms_tools_hide_session_argument_from_model():
 
     assert result["messages"][-1].content == "[LMS 에이전트] 과제 조회 결과입니다."
     assert llm.visible_properties == [set()]
+
+
+@pytest.mark.asyncio
+async def test_degraded_lms_tool_uses_bounded_invocation_then_custom_unavailable_response():
+    calls = 0
+
+    @tool("get_my_assignments")
+    def failing_assignments(mcp_session_id: str) -> str:
+        """LMS bounded-invocation fixture that still fails upstream."""
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("sensitive LMS upstream failure")
+
+    llm = _CapturingLmsLLM(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "get_my_assignments",
+                        "args": {},
+                        "id": "assignments-bounded-1",
+                    }
+                ],
+            ),
+            AIMessage(content="일반적인 과제 안내를 대신 제공하겠습니다."),
+        ]
+    )
+    graph = build_lms_agent(
+        [degraded_lms_status, failing_assignments],
+        llm=llm,
+    ).compile()
+
+    result = await graph.ainvoke(_state("degraded-lms-session"))
+
+    assert calls == 1
+    assert len(llm.seen_inputs) == 1
+    assert result["messages"][-1].content == (f"[LMS 에이전트] {_LMS_SERVICE_UNAVAILABLE_MESSAGE}")
+    assert "일반적인 과제 안내" not in result["messages"][-1].content
+    assert "sensitive LMS upstream failure" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_lms_dashboard_legacy_ok_envelope_is_an_operational_failure():
+    calls = 0
+
+    @tool("get_lms_dashboard")
+    def unavailable_dashboard(mcp_session_id: str) -> str:
+        """Mirror the legacy ssuMCP dashboard error envelope."""
+        nonlocal calls
+        calls += 1
+        return (
+            '{"status":"OK","mcpSessionId":"lms-secret","data":'
+            '"LMS API 오류가 발생했습니다. 잠시 후 다시 시도해 주세요. '
+            '(sensitive Canvas implementation detail)"}'
+        )
+
+    llm = _CapturingLmsLLM(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "get_lms_dashboard",
+                        "args": {},
+                        "id": "dashboard-legacy-failure-1",
+                    }
+                ],
+            ),
+            AIMessage(content="일반적인 LMS 안내를 대신 제공하겠습니다."),
+        ]
+    )
+    graph = build_lms_agent(
+        [degraded_lms_status, unavailable_dashboard],
+        llm=llm,
+    ).compile()
+
+    result = await graph.ainvoke(_state("degraded-lms-session"))
+
+    assert calls == 1
+    assert len(llm.seen_inputs) == 1
+    assert result["messages"][-1].content == (f"[LMS 에이전트] {_LMS_SERVICE_UNAVAILABLE_MESSAGE}")
+    assert "일반적인 LMS 안내" not in result["messages"][-1].content
+    assert "lms-secret" not in repr(result)
+    assert "sensitive Canvas implementation detail" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_degraded_lms_rejects_batched_private_calls_before_execution():
+    calls = 0
+
+    @tool("get_my_assignments")
+    def assignments(mcp_session_id: str) -> str:
+        """Count private LMS invocations."""
+        nonlocal calls
+        calls += 1
+        return '{"status":"OK","data":[]}'
+
+    llm = _CapturingLmsLLM(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "get_my_assignments", "args": {}, "id": "batch-1"},
+                    {"name": "get_my_assignments", "args": {}, "id": "batch-2"},
+                ],
+            )
+        ]
+    )
+    graph = build_lms_agent([degraded_lms_status, assignments], llm=llm).compile()
+
+    result = await graph.ainvoke(_state("degraded-lms-session"))
+
+    assert calls == 0
+    assert len(llm.seen_inputs) == 1
+    assert result["messages"][-1].content == (f"[LMS 에이전트] {_LMS_SERVICE_UNAVAILABLE_MESSAGE}")
+
+
+@pytest.mark.asyncio
+async def test_degraded_lms_rejects_model_driven_private_recall():
+    calls = 0
+
+    @tool("get_my_assignments")
+    def assignments(mcp_session_id: str) -> str:
+        """Return one successful bounded LMS result."""
+        nonlocal calls
+        calls += 1
+        return '{"status":"OK","data":[]}'
+
+    llm = _CapturingLmsLLM(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "get_my_assignments", "args": {}, "id": "bounded-1"}],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "get_my_assignments", "args": {}, "id": "recall-2"}],
+            ),
+        ]
+    )
+    graph = build_lms_agent([degraded_lms_status, assignments], llm=llm).compile()
+
+    result = await graph.ainvoke(_state("degraded-lms-session"))
+
+    assert calls == 1
+    assert len(llm.seen_inputs) == 2
+    assert result["messages"][-1].content == (f"[LMS 에이전트] {_LMS_SERVICE_UNAVAILABLE_MESSAGE}")
 
 
 def test_lms_prompt_uses_the_all_materials_shortcut() -> None:
